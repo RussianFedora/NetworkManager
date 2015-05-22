@@ -1,0 +1,520 @@
+From b7300bbe5a9f298ede02225b6b7e73e05aa78bc8 Mon Sep 17 00:00:00 2001
+From: Dan Winship <danw@gnome.org>
+Date: Fri, 11 Oct 2013 14:59:26 -0400
+Subject: [PATCH 1/2] core: improve handling of NPAR/SR-IOV devices (rh
+ #804527)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Use the new kernel physical_port_id interface property to recognize
+when two devices are just virtual devices sharing the same physical
+port, and refuse to bond/team multiple slaves on the same port.
+
+Signed-off-by: Jiří Klimeš <jklimes@redhat.com>
+---
+ introspection/nm-device.xml      |  8 +++++
+ src/devices/nm-device-bond.c     |  2 ++
+ src/devices/nm-device-private.h  |  3 ++
+ src/devices/nm-device-team.c     |  2 ++
+ src/devices/nm-device.c          | 70 +++++++++++++++++++++++++++++++++++++++-
+ src/devices/nm-device.h          |  3 ++
+ src/platform/nm-fake-platform.c  | 11 +++++++
+ src/platform/nm-linux-platform.c | 22 +++++++++++++
+ src/platform/nm-platform.c       | 18 +++++++++++
+ src/platform/nm-platform.h       |  4 +++
+ 10 files changed, 142 insertions(+), 1 deletion(-)
+
+diff --git a/introspection/nm-device.xml b/introspection/nm-device.xml
+index 7c63a3d..d9e7702 100644
+--- a/introspection/nm-device.xml
++++ b/introspection/nm-device.xml
+@@ -125,6 +125,14 @@
+         An array of object paths of every configured connection that is currently 'available' through this device.
+       </tp:docstring>
+     </property>
++    <property name="PhysicalPortId" type="s" access="read">
++      <tp:docstring>
++        If non-empty, an (opaque) indicator of the physical network
++        port associated with the device. This can be used to recognize
++	when two seemingly-separate hardware devices are actually just
++	different virtual interfaces to the same physical port.
++      </tp:docstring>
++    </property>
+ 
+     <method name="Disconnect">
+       <annotation name="org.freedesktop.DBus.GLib.CSymbol" value="impl_device_disconnect"/>
+diff --git a/src/devices/nm-device-bond.c b/src/devices/nm-device-bond.c
+index 950bbb8..82e5a9d 100644
+--- a/src/devices/nm-device-bond.c
++++ b/src/devices/nm-device-bond.c
+@@ -364,6 +364,8 @@ enslave_slave (NMDevice *device, NMDevice *slave, NMConnection *connection)
+ 	const char *iface = nm_device_get_ip_iface (device);
+ 	const char *slave_iface = nm_device_get_ip_iface (slave);
+ 
++	nm_device_master_check_slave_physical_port (device, slave, LOGD_BOND);
++
+ 	nm_device_take_down (slave, TRUE);
+ 
+ 	success = nm_platform_link_enslave (nm_device_get_ip_ifindex (device),
+diff --git a/src/devices/nm-device-private.h b/src/devices/nm-device-private.h
+index dc72886..3da1479 100644
+--- a/src/devices/nm-device-private.h
++++ b/src/devices/nm-device-private.h
+@@ -92,6 +92,9 @@ gboolean nm_device_get_enslaved (NMDevice *device);
+ 
+ NMDevice *nm_device_master_get_slave_by_ifindex (NMDevice *dev, int ifindex);
+ 
++void nm_device_master_check_slave_physical_port (NMDevice *dev, NMDevice *slave,
++                                                 guint64 log_domain);
++
+ void nm_device_set_carrier (NMDevice *device, gboolean carrier);
+ 
+ #endif	/* NM_DEVICE_PRIVATE_H */
+diff --git a/src/devices/nm-device-team.c b/src/devices/nm-device-team.c
+index 1b3b0c0..31806bc 100644
+--- a/src/devices/nm-device-team.c
++++ b/src/devices/nm-device-team.c
+@@ -546,6 +546,8 @@ enslave_slave (NMDevice *device, NMDevice *slave, NMConnection *connection)
+ 	const char *slave_iface = nm_device_get_ip_iface (slave);
+ 	NMSettingTeamPort *s_team_port;
+ 
++	nm_device_master_check_slave_physical_port (device, slave, LOGD_TEAM);
++
+ 	nm_device_take_down (slave, TRUE);
+ 
+ 	s_team_port = nm_connection_get_setting_team_port (connection);
+diff --git a/src/devices/nm-device.c b/src/devices/nm-device.c
+index 4ef5030..a0bf465 100644
+--- a/src/devices/nm-device.c
++++ b/src/devices/nm-device.c
+@@ -129,6 +129,7 @@ enum {
+ 	PROP_RFKILL_TYPE,
+ 	PROP_IFINDEX,
+ 	PROP_AVAILABLE_CONNECTIONS,
++	PROP_PHYSICAL_PORT_ID,
+ 	PROP_IS_MASTER,
+ 	PROP_HW_ADDRESS,
+ 	PROP_HAS_PENDING_ACTION,
+@@ -202,6 +203,7 @@ typedef struct {
+ 	GHashTable *  available_connections;
+ 	guint8        hw_addr[NM_UTILS_HWADDR_LEN_MAX];
+ 	guint         hw_addr_len;
++	char *        physical_port_id;
+ 
+ 	gboolean      manager_managed; /* whether managed by NMManager or not */
+ 	gboolean      default_unmanaged; /* whether unmanaged by default */
+@@ -589,8 +591,10 @@ constructed (GObject *object)
+ 		priv->carrier = TRUE;
+ 	}
+ 
+-	if (priv->ifindex > 0)
++	if (priv->ifindex > 0) {
+ 		priv->is_software = nm_platform_link_is_software (priv->ifindex);
++		priv->physical_port_id = nm_platform_link_get_physical_port_id (priv->ifindex);
++	}
+ 
+ 	if (G_OBJECT_CLASS (nm_device_parent_class)->constructed)
+ 		G_OBJECT_CLASS (nm_device_parent_class)->constructed (object);
+@@ -1338,6 +1342,49 @@ nm_device_master_get_slave_by_ifindex (NMDevice *dev, int ifindex)
+ }
+ 
+ /**
++ * nm_device_master_check_slave_physical_port:
++ * @dev: the master device
++ * @slave: a slave device
++ * @log_domain: domain to log a warning in
++ *
++ * Checks if @dev already has a slave with the same #NMDevice:physical-port-id
++ * as @slave, and logs a warning if so.
++ */
++void
++nm_device_master_check_slave_physical_port (NMDevice *dev, NMDevice *slave,
++                                            guint64 log_domain)
++{
++	NMDevicePrivate *priv = NM_DEVICE_GET_PRIVATE (dev);
++	const char *slave_physical_port_id, *existing_physical_port_id;
++	SlaveInfo *info;
++	GSList *iter;
++
++	slave_physical_port_id = nm_device_get_physical_port_id (slave);
++	if (!slave_physical_port_id)
++		return;
++
++	for (iter = priv->slaves; iter; iter = iter->next) {
++		info = iter->data;
++		if (info->slave == slave)
++			continue;
++
++		existing_physical_port_id = nm_device_get_physical_port_id (info->slave);
++		if (!g_strcmp0 (slave_physical_port_id, existing_physical_port_id)) {
++			nm_log_warn (log_domain, "(%s): slave %s shares a physical port with existing slave %s",
++			             nm_device_get_ip_iface (dev),
++			             nm_device_get_ip_iface (slave),
++			             nm_device_get_ip_iface (info->slave));
++			/* Since this function will get called for every slave, we only have
++			 * to warn about the first match we find; if there are other matches
++			 * later in the list, we will have already warned about them matching
++			 * @existing earlier.
++			 */
++			return;
++		}
++	}
++}
++
++/**
+  * nm_device_is_master:
+  * @dev: the device
+  *
+@@ -5172,6 +5219,8 @@ dispose (GObject *object)
+ 	g_hash_table_unref (priv->available_connections);
+ 	priv->available_connections = NULL;
+ 
++	g_clear_pointer (&priv->physical_port_id, g_free);
++
+ 	activation_source_clear (self, TRUE, AF_INET);
+ 	activation_source_clear (self, TRUE, AF_INET6);
+ 
+@@ -5432,6 +5481,9 @@ get_property (GObject *object, guint prop_id,
+ 			g_ptr_array_add (array, g_strdup (nm_connection_get_path (connection)));
+ 		g_value_take_boxed (value, array);
+ 		break;
++	case PROP_PHYSICAL_PORT_ID:
++		g_value_set_string (value, priv->physical_port_id);
++		break;
+ 	case PROP_IS_MASTER:
+ 		g_value_set_boolean (value, priv->is_master);
+ 		break;
+@@ -5689,6 +5741,14 @@ nm_device_class_init (NMDeviceClass *klass)
+ 		                     G_PARAM_READABLE));
+ 
+ 	g_object_class_install_property
++		(object_class, PROP_PHYSICAL_PORT_ID,
++		 g_param_spec_string (NM_DEVICE_PHYSICAL_PORT_ID,
++		                      "PhysicalPortId",
++		                      "PhysicalPortId",
++		                      NULL,
++		                      G_PARAM_READABLE));
++
++	g_object_class_install_property
+ 		(object_class, PROP_IS_MASTER,
+ 		 g_param_spec_boolean (NM_DEVICE_IS_MASTER,
+ 		                       "IsMaster",
+@@ -6908,3 +6968,11 @@ nm_device_has_pending_action (NMDevice *device)
+ 
+ 	return !!priv->pending_actions;
+ }
++
++const char *
++nm_device_get_physical_port_id (NMDevice *device)
++{
++	NMDevicePrivate *priv = NM_DEVICE_GET_PRIVATE (device);
++
++	return priv->physical_port_id;
++}
+diff --git a/src/devices/nm-device.h b/src/devices/nm-device.h
+index 38b9bea..b593d0a 100644
+--- a/src/devices/nm-device.h
++++ b/src/devices/nm-device.h
+@@ -60,6 +60,7 @@
+ #define NM_DEVICE_AUTOCONNECT      "autoconnect"
+ #define NM_DEVICE_FIRMWARE_MISSING "firmware-missing"
+ #define NM_DEVICE_AVAILABLE_CONNECTIONS "available-connections"
++#define NM_DEVICE_PHYSICAL_PORT_ID "physical-port-id"
+ #define NM_DEVICE_TYPE_DESC        "type-desc"    /* Internal only */
+ #define NM_DEVICE_RFKILL_TYPE      "rfkill-type"  /* Internal only */
+ #define NM_DEVICE_IFINDEX          "ifindex"      /* Internal only */
+@@ -337,6 +338,8 @@ gboolean nm_device_has_pending_action    (NMDevice *device);
+ void     nm_device_remove_pending_action (NMDevice *device, const char *action);
+ gboolean nm_device_has_pending_action    (NMDevice *device);
+ 
++const char *nm_device_get_physical_port_id (NMDevice *device);
++
+ G_END_DECLS
+ 
+ /* For testing only */
+diff --git a/src/platform/nm-fake-platform.c b/src/platform/nm-fake-platform.c
+index 6d7843f..491e23e 100644
+--- a/src/platform/nm-fake-platform.c
++++ b/src/platform/nm-fake-platform.c
+@@ -466,6 +466,15 @@ link_get_mtu (NMPlatform *platform, int ifindex)
+ 	return device ? device->link.mtu : 0;
+ }
+ 
++static char *
++link_get_physical_port_id (NMPlatform *platform, int ifindex)
++{
++	/* We call link_get just to cause an error to be set if @ifindex is bad. */
++	link_get (platform, ifindex);
++
++	return NULL;
++}
++
+ static gboolean
+ link_supports_carrier_detect (NMPlatform *platform, int ifindex)
+ {
+@@ -1189,6 +1198,8 @@ nm_fake_platform_class_init (NMFakePlatformClass *klass)
+ 	platform_class->link_get_mtu = link_get_mtu;
+ 	platform_class->link_set_mtu = link_set_mtu;
+ 
++	platform_class->link_get_physical_port_id = link_get_physical_port_id;
++
+ 	platform_class->link_supports_carrier_detect = link_supports_carrier_detect;
+ 	platform_class->link_supports_vlans = link_supports_vlans;
+ 
+diff --git a/src/platform/nm-linux-platform.c b/src/platform/nm-linux-platform.c
+index 821a8cd..23125f8 100644
+--- a/src/platform/nm-linux-platform.c
++++ b/src/platform/nm-linux-platform.c
+@@ -1725,6 +1725,26 @@ link_get_mtu (NMPlatform *platform, int ifindex)
+ 	return rtnllink ? rtnl_link_get_mtu (rtnllink) : 0;
+ }
+ 
++static char *
++link_get_physical_port_id (NMPlatform *platform, int ifindex)
++{
++	const char *ifname;
++	char *path, *id;
++
++	ifname = nm_platform_link_get_name (ifindex);
++	if (!ifname)
++		return NULL;
++
++	path = g_strdup_printf ("/sys/class/net/%s/physical_port_id", ifname);
++	if (g_file_test (path, G_FILE_TEST_EXISTS))
++		id = sysctl_get (platform, path);
++	else
++		id = NULL;
++	g_free (path);
++
++	return id;
++}
++
+ static int
+ vlan_add (NMPlatform *platform, const char *name, int parent, int vlan_id, guint32 vlan_flags)
+ {
+@@ -2719,6 +2739,8 @@ nm_linux_platform_class_init (NMLinuxPlatformClass *klass)
+ 	platform_class->link_get_mtu = link_get_mtu;
+ 	platform_class->link_set_mtu = link_set_mtu;
+ 
++	platform_class->link_get_physical_port_id = link_get_physical_port_id;
++
+ 	platform_class->link_supports_carrier_detect = link_supports_carrier_detect;
+ 	platform_class->link_supports_vlans = link_supports_vlans;
+ 
+diff --git a/src/platform/nm-platform.c b/src/platform/nm-platform.c
+index f5a4c9b..7460b12 100644
+--- a/src/platform/nm-platform.c
++++ b/src/platform/nm-platform.c
+@@ -734,6 +734,24 @@ nm_platform_link_get_mtu (int ifindex)
+ }
+ 
+ /**
++ * nm_platform_link_get_mtu:
++ * @ifindex: Interface index
++ *
++ * Returns: physical port ID for the interface, or %NULL on error
++ * or if the interface has no physical port ID.
++ */
++char *
++nm_platform_link_get_physical_port_id (int ifindex)
++{
++	reset_error ();
++
++	g_return_val_if_fail (ifindex >= 0, NULL);
++	g_return_val_if_fail (klass->link_get_physical_port_id, NULL);
++
++	return klass->link_get_physical_port_id (platform, ifindex);
++}
++
++/**
+  * nm_platform_link_enslave:
+  * @master: Interface index of the master
+  * @slave: Interface index of the slave
+diff --git a/src/platform/nm-platform.h b/src/platform/nm-platform.h
+index b11bbc3..5494d48 100644
+--- a/src/platform/nm-platform.h
++++ b/src/platform/nm-platform.h
+@@ -251,6 +251,8 @@ typedef struct {
+ 	guint32 (*link_get_mtu) (NMPlatform *, int ifindex);
+ 	gboolean (*link_set_mtu) (NMPlatform *, int ifindex, guint32 mtu);
+ 
++	char * (*link_get_physical_port_id) (NMPlatform *, int ifindex);
++
+ 	gboolean (*link_supports_carrier_detect) (NMPlatform *, int ifindex);
+ 	gboolean (*link_supports_vlans) (NMPlatform *, int ifindex);
+ 
+@@ -370,6 +372,8 @@ gboolean nm_platform_link_set_address (int ifindex, const void *address, size_t
+ guint32 nm_platform_link_get_mtu (int ifindex);
+ gboolean nm_platform_link_set_mtu (int ifindex, guint32 mtu);
+ 
++char *nm_platform_link_get_physical_port_id (int ifindex);
++
+ gboolean nm_platform_link_supports_carrier_detect (int ifindex);
+ gboolean nm_platform_link_supports_vlans (int ifindex);
+ 
+-- 
+1.7.11.7
+
+
+From 47cc8b25f2efe015defde7e76e49e67086603bb3 Mon Sep 17 00:00:00 2001
+From: Dan Winship <danw@gnome.org>
+Date: Fri, 11 Oct 2013 14:59:26 -0400
+Subject: [PATCH 2/2] libnm-glib: add NMDevice:physical-port-id property
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Add the physical-port-id property to NMDevice so that clients can
+recognize NPAR/SR-IOV devices.
+
+Signed-off-by: Jiří Klimeš <jklimes@redhat.com>
+---
+ libnm-glib/libnm-glib.ver |  1 +
+ libnm-glib/nm-device.c    | 55 +++++++++++++++++++++++++++++++++++++++++++++++
+ libnm-glib/nm-device.h    |  2 ++
+ 3 files changed, 58 insertions(+)
+
+diff --git a/libnm-glib/libnm-glib.ver b/libnm-glib/libnm-glib.ver
+index 4727bc3..416b782 100644
+--- a/libnm-glib/libnm-glib.ver
++++ b/libnm-glib/libnm-glib.ver
+@@ -130,6 +130,7 @@ global:
+ 	nm_device_get_ip6_config;
+ 	nm_device_get_ip_iface;
+ 	nm_device_get_managed;
++	nm_device_get_physical_port_id;
+ 	nm_device_get_product;
+ 	nm_device_get_state;
+ 	nm_device_get_state_reason;
+diff --git a/libnm-glib/nm-device.c b/libnm-glib/nm-device.c
+index 05e59e5..d4f95ac 100644
+--- a/libnm-glib/nm-device.c
++++ b/libnm-glib/nm-device.c
+@@ -96,6 +96,8 @@ typedef struct {
+ 	GUdevClient *client;
+ 	char *product;
+ 	char *vendor;
++
++	char *physical_port_id;
+ } NMDevicePrivate;
+ 
+ enum {
+@@ -121,6 +123,7 @@ enum {
+ 	PROP_DEVICE_TYPE,
+ 	PROP_ACTIVE_CONNECTION,
+ 	PROP_AVAILABLE_CONNECTIONS,
++	PROP_PHYSICAL_PORT_ID,
+ 
+ 	LAST_PROP
+ };
+@@ -199,6 +202,7 @@ register_properties (NMDevice *device)
+ 		{ NM_DEVICE_STATE_REASON,      &priv->state, demarshal_state_reason },
+ 		{ NM_DEVICE_ACTIVE_CONNECTION, &priv->active_connection, NULL, NM_TYPE_ACTIVE_CONNECTION },
+ 		{ NM_DEVICE_AVAILABLE_CONNECTIONS, &priv->available_connections, NULL, NM_TYPE_REMOTE_CONNECTION },
++		{ NM_DEVICE_PHYSICAL_PORT_ID,  &priv->physical_port_id },
+ 
+ 		/* Properties that exist in D-Bus but that we don't track */
+ 		{ "ip4-address", NULL },
+@@ -389,6 +393,7 @@ finalize (GObject *object)
+ 	g_free (priv->product);
+ 	g_free (priv->vendor);
+ 	g_free (priv->type_description);
++	g_free (priv->physical_port_id);
+ 
+ 	G_OBJECT_CLASS (nm_device_parent_class)->finalize (object);
+ }
+@@ -473,6 +478,9 @@ get_property (GObject *object,
+ 	case PROP_VENDOR:
+ 		g_value_set_string (value, nm_device_get_vendor (device));
+ 		break;
++	case PROP_PHYSICAL_PORT_ID:
++		g_value_set_string (value, nm_device_get_physical_port_id (device));
++		break;
+ 	default:
+ 		G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
+ 		break;
+@@ -804,6 +812,22 @@ nm_device_class_init (NMDeviceClass *device_class)
+ 						  NULL,
+ 						  G_PARAM_READABLE));
+ 
++	/**
++	 * NMDevice:physical-port-id:
++	 *
++	 * The physical port ID of the device. (See
++	 * nm_device_get_physical_port_id().)
++	 *
++	 * Since: 0.9.10
++	 **/
++	g_object_class_install_property
++		(object_class, PROP_PHYSICAL_PORT_ID,
++		 g_param_spec_string (NM_DEVICE_PHYSICAL_PORT_ID,
++		                      "Physical Port ID",
++		                      "Physical port ID",
++		                      NULL,
++		                      G_PARAM_READABLE));
++
+ 	/* signals */
+ 
+ 	/**
+@@ -1517,6 +1541,37 @@ nm_device_get_vendor (NMDevice *device)
+ 	return priv->vendor;
+ }
+ 
++/**
++ * nm_device_get_physical_port_id:
++ * @device: a #NMDevice
++ *
++ * Gets the physical port ID of the #NMDevice. If non-%NULL, this is
++ * an opaque string that can be used to recognize when
++ * seemingly-unrelated #NMDevices are actually just different virtual
++ * ports on a single physical port. (Eg, NPAR / SR-IOV.)
++ *
++ * Returns: the physical port ID of the device, or %NULL if the port
++ *   ID is unknown. This is the internal string used by the device and
++ *   must not be modified.
++ *
++ * Since: 0.9.10
++ **/
++const char *
++nm_device_get_physical_port_id (NMDevice *device)
++{
++	NMDevicePrivate *priv;
++
++	g_return_val_if_fail (NM_IS_DEVICE (device), NULL);
++
++	priv = NM_DEVICE_GET_PRIVATE (device);
++
++	_nm_object_ensure_inited (NM_OBJECT (device));
++	if (priv->physical_port_id && *priv->physical_port_id)
++		return priv->physical_port_id;
++	else
++		return NULL;
++}
++
+ typedef struct {
+ 	NMDevice *device;
+ 	NMDeviceDeactivateFn fn;
+diff --git a/libnm-glib/nm-device.h b/libnm-glib/nm-device.h
+index ed274ca..bd746b3 100644
+--- a/libnm-glib/nm-device.h
++++ b/libnm-glib/nm-device.h
+@@ -80,6 +80,7 @@ GQuark nm_device_error_quark (void);
+ #define NM_DEVICE_AVAILABLE_CONNECTIONS "available-connections"
+ #define NM_DEVICE_VENDOR "vendor"
+ #define NM_DEVICE_PRODUCT "product"
++#define NM_DEVICE_PHYSICAL_PORT_ID "physical-port-id"
+ 
+ typedef struct {
+ 	NMObject parent;
+@@ -135,6 +136,7 @@ NMActiveConnection * nm_device_get_active_connection(NMDevice *device);
+ const GPtrArray *    nm_device_get_available_connections(NMDevice *device);
+ const char *         nm_device_get_product          (NMDevice *device);
+ const char *         nm_device_get_vendor           (NMDevice *device);
++const char *         nm_device_get_physical_port_id (NMDevice *device);
+ 
+ typedef void (*NMDeviceDeactivateFn) (NMDevice *device, GError *error, gpointer user_data);
+ 
+-- 
+1.7.11.7
+

@@ -1,0 +1,37 @@
+From acb6a0d305dddccb6d73575c88aefad60faa173a Mon Sep 17 00:00:00 2001
+From: Dan Winship <danw@gnome.org>
+Date: Thu, 27 Mar 2014 12:16:46 -0400
+Subject: [PATCH] core: update NMManager:devices before emitting
+ notify::devices (rh #1078720)
+
+NMClient's "devices" property was getting out of sync because the
+daemon was emitting "notify" before actually changing the property
+value. This resulted in problems with re-activating virtual devices
+that had previously been deactivated in gnome-control-center and
+anaconda. (And probably gnome-shell and nm-applet?)
+---
+ src/nm-manager.c | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/src/nm-manager.c b/src/nm-manager.c
+index be2f118..48ce061 100644
+--- a/src/nm-manager.c
++++ b/src/nm-manager.c
+@@ -752,12 +752,12 @@ remove_device (NMManager *manager, NMDevice *device)
+ 	g_signal_handlers_disconnect_matched (device, G_SIGNAL_MATCH_DATA, 0, 0, NULL, NULL, manager);
+ 
+ 	nm_settings_device_removed (priv->settings, device);
++	priv->devices = g_slist_remove (priv->devices, device);
++
+ 	g_signal_emit (manager, signals[DEVICE_REMOVED], 0, device);
+ 	g_object_notify (G_OBJECT (manager), NM_MANAGER_DEVICES);
+ 	g_object_unref (device);
+ 
+-	priv->devices = g_slist_remove (priv->devices, device);
+-
+ 	if (priv->startup)
+ 		check_if_startup_complete (manager);
+ }
+-- 
+1.9.0
+

@@ -1,0 +1,75 @@
+From 0103063caa63d4fa72ca6e78399569416465030d Mon Sep 17 00:00:00 2001
+From: Dan Williams <dcbw@redhat.com>
+Date: Tue, 29 Apr 2014 16:42:57 -0500
+Subject: [PATCH 1/1] core: emit dhcp4/dhcp6-change dispatcher events if other
+ IP completes first (rh #1091296) (bgo #729284)
+
+If IPv6 completes first it would emit the "up" dispatcher event with IPv6
+details and move the device to ACTIVATED state.  But if DHCPv4 was still
+running, no dispatcher event would be emitted with the DHCPv4 information
+until the first lease renew.  Thus dispatcher scripts would not receive
+DHCPv4 information for quite some time.
+
+Ensure that if the other IP version completes first, that when the slower
+method's DHCP completes, that it emits the appropriate dhcp4-change
+or dhcp6-change event so that dispatcher scripts get the information
+as soon as it's available.
+
+https://bugzilla.gnome.org/show_bug.cgi?id=729284
+(cherry picked from commit 11f9855223966c4fd927fe83e2cd9a623a74acad)
+
+Conflicts:
+	src/devices/nm-device.c
+---
+ src/devices/nm-device.c | 28 ++++++++++++++++++++++++++++
+ 1 file changed, 28 insertions(+)
+
+diff --git a/src/devices/nm-device.c b/src/devices/nm-device.c
+index 1e8704c..5fc6cb7 100644
+--- a/src/devices/nm-device.c
++++ b/src/devices/nm-device.c
+@@ -4219,6 +4219,20 @@ nm_device_activate_ip4_config_commit (gpointer user_data)
+ 		}
+ 	}
+ 
++	/* If IPv4 wasn't the first to complete, and DHCP was used, then ensure
++	 * dispatcher scripts get the DHCP lease information.
++	 */
++	if (   priv->dhcp4_client
++	    && nm_device_activate_ip4_state_in_conf (self)
++	    && (nm_device_get_state (self) > NM_DEVICE_STATE_IP_CONFIG)) {
++		/* Notify dispatcher scripts of new DHCP4 config */
++		nm_dispatcher_call (DISPATCHER_ACTION_DHCP4_CHANGE,
++		                    nm_device_get_connection (self),
++		                    self,
++		                    NULL,
++		                    NULL);
++	}
++
+ 	/* Enter the IP_CHECK state if this is the first method to complete */
+ 	priv->ip4_state = IP_DONE;
+ 	if (nm_device_get_state (self) == NM_DEVICE_STATE_IP_CONFIG)
+@@ -4297,6 +4311,20 @@ nm_device_activate_ip6_config_commit (gpointer user_data)
+ 		NM_DEVICE_GET_CLASS (self)->ip6_config_pre_commit (self);
+ 
+ 	if (ip6_config_merge_and_apply (self, TRUE, &reason)) {
++		/* If IPv6 wasn't the first IP to complete, and DHCP was used,
++		 * then ensure dispatcher scripts get the DHCP lease information.
++		 */
++		if (   priv->dhcp6_client
++		    && nm_device_activate_ip6_state_in_conf (self)
++		    && (nm_device_get_state (self) > NM_DEVICE_STATE_IP_CONFIG)) {
++			/* Notify dispatcher scripts of new DHCP6 config */
++			nm_dispatcher_call (DISPATCHER_ACTION_DHCP6_CHANGE,
++			                    nm_device_get_connection (self),
++			                    self,
++			                    NULL,
++			                    NULL);
++		}
++
+ 		/* Enter the IP_CHECK state if this is the first method to complete */
+ 		priv->ip6_state = IP_DONE;
+ 		if (nm_device_get_state (self) == NM_DEVICE_STATE_IP_CONFIG)
+-- 
+1.9.3
+

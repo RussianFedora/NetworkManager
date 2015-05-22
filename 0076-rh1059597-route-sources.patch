@@ -1,0 +1,1005 @@
+From bede7357f6f66c053e5acd59692ed95471dac031 Mon Sep 17 00:00:00 2001
+From: Dan Williams <dcbw@redhat.com>
+Date: Mon, 6 Jan 2014 14:14:14 -0600
+Subject: [PATCH] core/platform: add address/route sources (rh#1005416,
+ bgo#722843)
+
+Tag addresses and routes with their source.  We'll use this later to do
+(or not do) operations based on where the item came from.
+
+One thing to note is that when synchronizing items with the kernel, all
+items are read as source=KERNEL even when they originally came from
+NetworkManager, since the kernel has no way of providing this source
+information.  This requires the source 'priority', which
+nm_ip*_config_add_address() and nm_ip*_config_add_route() must respect
+to ensure that NM-owned routes don't have their source overwritten
+when merging various IP configs in ip*_config_merge_and_apply().
+
+Also of note is that memcmp() can no longer be used to compare
+addresses/routes in nm-platform.c, but this had problems before
+anyway with ifindex, so that workaround from nm_platform_ip4_route_sync()
+can be removed.
+
+https://bugzilla.gnome.org/show_bug.cgi?id=722843
+https://bugzilla.redhat.com/show_bug.cgi?id=1005416
+
+[lkundrak@v3.sk: Backported to f20]
+Conflicts:
+	src/devices/nm-device.c
+	src/dhcp-manager/nm-dhcp-dhclient-utils.c
+	src/platform/nm-platform.c
+	src/tests/test-ip4-config.c
+
+(cherry picked from commit 067db6f8d75fe612a626ce4ee7be910262f438a3)
+---
+ src/devices/nm-device.c                   |   5 ++
+ src/dhcp-manager/nm-dhcp-client.c         |   5 ++
+ src/dhcp-manager/nm-dhcp-dhclient-utils.c |   1 -
+ src/modem-manager/nm-modem-broadband.c    |   1 +
+ src/modem-manager/nm-modem-old.c          |   1 +
+ src/nm-ip4-config.c                       |  43 +++++++++++
+ src/nm-ip6-config.c                       |  43 +++++++++++
+ src/platform/nm-linux-platform.c          |   4 ++
+ src/platform/nm-platform.c                |  75 +++++++++++++++----
+ src/platform/nm-platform.h                |  18 +++++
+ src/ppp-manager/nm-ppp-manager.c          |   1 +
+ src/tests/test-ip4-config.c               | 116 ++++++++++++++++++++++++++++++
+ src/tests/test-ip6-config.c               | 116 ++++++++++++++++++++++++++++++
+ src/vpn-manager/nm-vpn-connection.c       |  12 +++-
+ 14 files changed, 424 insertions(+), 17 deletions(-)
+
+diff --git a/src/devices/nm-device.c b/src/devices/nm-device.c
+index 5fc6cb7..39b6472 100644
+--- a/src/devices/nm-device.c
++++ b/src/devices/nm-device.c
+@@ -2220,12 +2220,14 @@ aipd_get_ip4_config (NMDevice *self, guint32 lla)
+ 	memset (&address, 0, sizeof (address));
+ 	address.address = lla;
+ 	address.plen = 16;
++	address.source = NM_PLATFORM_SOURCE_IP4LL;
+ 	nm_ip4_config_add_address (config, &address);
+ 
+ 	/* Add a multicast route for link-local connections: destination= 224.0.0.0, netmask=240.0.0.0 */
+ 	memset (&route, 0, sizeof (route));
+ 	route.network = htonl (0xE0000000L);
+ 	route.plen = 4;
++	route.source = NM_PLATFORM_SOURCE_IP4LL;
+ 	nm_ip4_config_add_route (config, &route);
+ 
+ 	return config;
+@@ -2738,6 +2740,7 @@ shared4_new_config (NMDevice *self, NMDeviceStateReason *reason)
+ 	memset (&address, 0, sizeof (address));
+ 	address.address = tmp_addr;
+ 	address.plen = 24;
++	address.source = NM_PLATFORM_SOURCE_SHARED;
+ 	nm_ip4_config_add_address (config, &address);
+ 
+ 	/* Remove the address lock when the object gets disposed */
+@@ -3322,6 +3325,7 @@ rdisc_config_changed (NMRDisc *rdisc, NMRDiscConfigMap changed, NMDevice *device
+ 			address.lifetime = discovered_address->lifetime;
+ 			address.preferred = discovered_address->preferred;
+ 			address.flags = ifa_flags;
++			address.source = NM_PLATFORM_SOURCE_RDISC;
+ 
+ 			nm_ip6_config_add_address (priv->ac_ip6_config, &address);
+ 		}
+@@ -3344,6 +3348,7 @@ rdisc_config_changed (NMRDisc *rdisc, NMRDiscConfigMap changed, NMDevice *device
+ 				route.network = discovered_route->network;
+ 				route.plen = discovered_route->plen;
+ 				route.gateway = discovered_route->gateway;
++				route.source = NM_PLATFORM_SOURCE_RDISC;
+ 
+ 				nm_ip6_config_add_route (priv->ac_ip6_config, &route);
+ 			}
+diff --git a/src/dhcp-manager/nm-dhcp-client.c b/src/dhcp-manager/nm-dhcp-client.c
+index 2063049..5c8202e 100644
+--- a/src/dhcp-manager/nm-dhcp-client.c
++++ b/src/dhcp-manager/nm-dhcp-client.c
+@@ -864,6 +864,7 @@ ip4_process_dhcpcd_rfc3442_routes (const char *str,
+ 			route.network = rt_addr;
+ 			route.plen = rt_cidr;
+ 			route.gateway = rt_route;
++			route.source = NM_PLATFORM_SOURCE_DHCP;
+ 			nm_ip4_config_add_route (ip4_config, &route);
+ 		}
+ 	}
+@@ -967,6 +968,7 @@ ip4_process_dhclient_rfc3442_routes (const char *str,
+ 			char nh[INET_ADDRSTRLEN + 1];
+ 
+ 			/* normal route */
++			route.source = NM_PLATFORM_SOURCE_DHCP;
+ 			nm_ip4_config_add_route (ip4_config, &route);
+ 
+ 			inet_ntop (AF_INET, &route.network, addr, sizeof (addr));
+@@ -1079,6 +1081,7 @@ process_classful_routes (GHashTable *options, NMIP4Config *ip4_config)
+ 		route.network = rt_addr;
+ 		route.plen = 32;
+ 		route.gateway = rt_route;
++		route.source = NM_PLATFORM_SOURCE_DHCP;
+ 
+ 		nm_ip4_config_add_route (ip4_config, &route);
+ 		nm_log_info (LOGD_DHCP, "  static route %s gw %s", *s, *(s + 1));
+@@ -1246,6 +1249,7 @@ ip4_options_to_config (NMDHCPClient *self)
+ 		nm_log_info (LOGD_DHCP4, "  lease time %d", address.lifetime);
+ 	}
+ 
++	address.source = NM_PLATFORM_SOURCE_DHCP;
+ 	nm_ip4_config_add_address (ip4_config, &address);
+ 
+ 	str = g_hash_table_lookup (priv->options, "new_host_name");
+@@ -1413,6 +1417,7 @@ ip6_options_to_config (NMDHCPClient *self)
+ 		}
+ 
+ 		address.address = tmp_addr;
++		address.source = NM_PLATFORM_SOURCE_DHCP;
+ 		nm_ip6_config_add_address (ip6_config, &address);
+ 		nm_log_info (LOGD_DHCP6, "  address %s", str);
+ 	} else if (priv->info_only == FALSE) {
+diff --git a/src/dhcp-manager/nm-dhcp-dhclient-utils.c b/src/dhcp-manager/nm-dhcp-dhclient-utils.c
+index c318e8d..17ecab0 100644
+--- a/src/dhcp-manager/nm-dhcp-dhclient-utils.c
++++ b/src/dhcp-manager/nm-dhcp-dhclient-utils.c
+@@ -426,4 +426,3 @@ nm_dhcp_dhclient_save_duid (const char *leasefile,
+ 	g_string_free (s, TRUE);
+ 	return success;
+ }
+-
+diff --git a/src/modem-manager/nm-modem-broadband.c b/src/modem-manager/nm-modem-broadband.c
+index 508624d..032557d 100644
+--- a/src/modem-manager/nm-modem-broadband.c
++++ b/src/modem-manager/nm-modem-broadband.c
+@@ -656,6 +656,7 @@ static_stage3_done (NMModemBroadband *self)
+ 	memset (&address, 0, sizeof (address));
+ 	address.address = address_network;
+ 	address.plen = mm_bearer_ip_config_get_prefix (self->priv->ipv4_config);
++	address.source = NM_PLATFORM_SOURCE_WWAN;
+ 	nm_ip4_config_add_address (config, &address);
+ 
+ 	nm_log_info (LOGD_MB, "  address %s/%d",
+diff --git a/src/modem-manager/nm-modem-old.c b/src/modem-manager/nm-modem-old.c
+index 60ddd47..866a94a 100644
+--- a/src/modem-manager/nm-modem-old.c
++++ b/src/modem-manager/nm-modem-old.c
+@@ -620,6 +620,7 @@ static_stage3_done (DBusGProxy *proxy, DBusGProxyCall *call, gpointer user_data)
+ 		/* IP address */
+ 		address.address = g_value_get_uint (g_value_array_get_nth (ret_array, 0));
+ 		address.plen = 32;
++		address.source = NM_PLATFORM_SOURCE_WWAN;
+ 		nm_ip4_config_add_address (config, &address);
+ 
+ 		nm_log_info (LOGD_MB, "  address %s/%d",
+diff --git a/src/nm-ip4-config.c b/src/nm-ip4-config.c
+index 23be6d7..2a3f23d 100644
+--- a/src/nm-ip4-config.c
++++ b/src/nm-ip4-config.c
+@@ -235,6 +235,7 @@ nm_ip4_config_merge_setting (NMIP4Config *config, NMSettingIP4Config *setting)
+ 		address.plen = nm_ip4_address_get_prefix (s_addr);
+ 		address.lifetime = NM_PLATFORM_LIFETIME_PERMANENT;
+ 		address.preferred = NM_PLATFORM_LIFETIME_PERMANENT;
++		address.source = NM_PLATFORM_SOURCE_USER;
+ 
+ 		nm_ip4_config_add_address (config, &address);
+ 	}
+@@ -251,6 +252,7 @@ nm_ip4_config_merge_setting (NMIP4Config *config, NMSettingIP4Config *setting)
+ 		route.plen = nm_ip4_route_get_prefix (s_route);
+ 		route.gateway = nm_ip4_route_get_next_hop (s_route);
+ 		route.metric = nm_ip4_route_get_metric (s_route);
++		route.source = NM_PLATFORM_SOURCE_USER;
+ 
+ 		nm_ip4_config_add_route (config, &route);
+ 	}
+@@ -901,10 +903,21 @@ nm_ip4_config_reset_addresses (NMIP4Config *config)
+ 	}
+ }
+ 
++/**
++ * nm_ip4_config_add_address:
++ * @config: the #NMIP4Config
++ * @new: the new address to add to @config
++ *
++ * Adds the new address to @config.  If an address with the same basic properties
++ * (address, prefix) already exists in @config, it is overwritten with the
++ * lifetime and preferred of @new.  The source is also overwritten by the source
++ * from @new if that source is higher priority.
++ */
+ void
+ nm_ip4_config_add_address (NMIP4Config *config, const NMPlatformIP4Address *new)
+ {
+ 	NMIP4ConfigPrivate *priv = NM_IP4_CONFIG_GET_PRIVATE (config);
++	NMPlatformSource old_source;
+ 	int i;
+ 
+ 	g_return_if_fail (new != NULL);
+@@ -915,7 +928,10 @@ nm_ip4_config_add_address (NMIP4Config *config, const NMPlatformIP4Address *new)
+ 		if (addresses_are_duplicate (item, new, FALSE)) {
+ 			if (nm_platform_ip4_address_cmp (item, new) == 0)
+ 				return;
++			old_source = item->source;
+ 			memcpy (item, new, sizeof (*item));
++			/* Restore highest priority source */
++			item->source = MAX (old_source, new->source);
+ 			goto NOTIFY;
+ 		}
+ 	}
+@@ -965,10 +981,21 @@ nm_ip4_config_reset_routes (NMIP4Config *config)
+ 	}
+ }
+ 
++/**
++ * nm_ip4_config_add_route:
++ * @config: the #NMIP4Config
++ * @new: the new route to add to @config
++ *
++ * Adds the new route to @config.  If a route with the same basic properties
++ * (network, prefix) already exists in @config, it is overwritten including the
++ * gateway and metric of @new.  The source is also overwritten by the source
++ * from @new if that source is higher priority.
++ */
+ void
+ nm_ip4_config_add_route (NMIP4Config *config, const NMPlatformIP4Route *new)
+ {
+ 	NMIP4ConfigPrivate *priv = NM_IP4_CONFIG_GET_PRIVATE (config);
++	NMPlatformSource old_source;
+ 	int i;
+ 
+ 	g_return_if_fail (new != NULL);
+@@ -979,7 +1006,10 @@ nm_ip4_config_add_route (NMIP4Config *config, const NMPlatformIP4Route *new)
+ 		if (routes_are_duplicate (item, new, FALSE)) {
+ 			if (nm_platform_ip4_route_cmp (item, new) == 0)
+ 				return;
++			old_source = item->source;
+ 			memcpy (item, new, sizeof (*item));
++			/* Restore highest priority source */
++			item->source = MAX (old_source, new->source);
+ 			goto NOTIFY;
+ 		}
+ 	}
+@@ -1404,6 +1434,19 @@ nm_ip4_config_hash (const NMIP4Config *config, GChecksum *sum, gboolean dns_only
+ 	}
+ }
+ 
++/**
++ * nm_ip4_config_equal:
++ * @a: first config to compare
++ * @b: second config to compare
++ *
++ * Compares two #NMIP4Configs for basic equality.  This means that all
++ * attributes must exist in the same order in both configs (addresses, routes,
++ * domains, DNS servers, etc) but some attributes (address lifetimes, and address
++ * and route sources) are ignored.
++ *
++ * Returns: %TRUE if the configurations are basically equal to each other,
++ * %FALSE if not
++ */
+ gboolean
+ nm_ip4_config_equal (const NMIP4Config *a, const NMIP4Config *b)
+ {
+diff --git a/src/nm-ip6-config.c b/src/nm-ip6-config.c
+index 58ad2e0..ddbce19 100644
+--- a/src/nm-ip6-config.c
++++ b/src/nm-ip6-config.c
+@@ -228,6 +228,7 @@ nm_ip6_config_merge_setting (NMIP6Config *config, NMSettingIP6Config *setting)
+ 		address.plen = nm_ip6_address_get_prefix (s_addr);
+ 		address.lifetime = NM_PLATFORM_LIFETIME_PERMANENT;
+ 		address.preferred = NM_PLATFORM_LIFETIME_PERMANENT;
++		address.source = NM_PLATFORM_SOURCE_USER;
+ 
+ 		nm_ip6_config_add_address (config, &address);
+ 	}
+@@ -244,6 +245,7 @@ nm_ip6_config_merge_setting (NMIP6Config *config, NMSettingIP6Config *setting)
+ 		route.plen = nm_ip6_route_get_prefix (s_route);
+ 		route.gateway = *nm_ip6_route_get_next_hop (s_route);
+ 		route.metric = nm_ip6_route_get_metric (s_route);
++		route.source = NM_PLATFORM_SOURCE_USER;
+ 
+ 		nm_ip6_config_add_route (config, &route);
+ 	}
+@@ -734,10 +736,21 @@ nm_ip6_config_reset_addresses (NMIP6Config *config)
+ 	}
+ }
+ 
++/**
++ * nm_ip6_config_add_address:
++ * @config: the #NMIP6Config
++ * @new: the new address to add to @config
++ *
++ * Adds the new address to @config.  If an address with the same basic properties
++ * (address, prefix) already exists in @config, it is overwritten with the
++ * lifetime and preferred of @new.  The source is also overwritten by the source
++ * from @new if that source is higher priority.
++ */
+ void
+ nm_ip6_config_add_address (NMIP6Config *config, const NMPlatformIP6Address *new)
+ {
+ 	NMIP6ConfigPrivate *priv = NM_IP6_CONFIG_GET_PRIVATE (config);
++	NMPlatformSource old_source;
+ 	int i;
+ 
+ 	g_return_if_fail (new != NULL);
+@@ -748,8 +761,11 @@ nm_ip6_config_add_address (NMIP6Config *config, const NMPlatformIP6Address *new)
+ 		if (IN6_ARE_ADDR_EQUAL (&item->address, &new->address)) {
+ 			if (nm_platform_ip6_address_cmp (item, new) == 0)
+ 				return;
++			old_source = item->source;
+ 			/* Copy over old item to get new lifetime, timestamp, preferred */
+ 			*item = *new;
++			/* But restore highest priority source */
++			item->source = MAX (old_source, new->source);
+ 			goto NOTIFY;
+ 		}
+ 	}
+@@ -799,10 +815,21 @@ nm_ip6_config_reset_routes (NMIP6Config *config)
+ 	}
+ }
+ 
++/**
++ * nm_ip6_config_add_route:
++ * @config: the #NMIP6Config
++ * @new: the new route to add to @config
++ *
++ * Adds the new route to @config.  If a route with the same basic properties
++ * (network, prefix) already exists in @config, it is overwritten including the
++ * gateway and metric of @new.  The source is also overwritten by the source
++ * from @new if that source is higher priority.
++ */
+ void
+ nm_ip6_config_add_route (NMIP6Config *config, const NMPlatformIP6Route *new)
+ {
+ 	NMIP6ConfigPrivate *priv = NM_IP6_CONFIG_GET_PRIVATE (config);
++	NMPlatformSource old_source;
+ 	int i;
+ 
+ 	g_return_if_fail (new != NULL);
+@@ -813,7 +840,10 @@ nm_ip6_config_add_route (NMIP6Config *config, const NMPlatformIP6Route *new)
+ 		if (routes_are_duplicate (item, new, FALSE)) {
+ 			if (nm_platform_ip6_route_cmp (item, new) == 0)
+ 				return;
++			old_source = item->source;
+ 			*item = *new;
++			/* Restore highest priority source */
++			item->source = MAX (old_source, new->source);
+ 			goto NOTIFY;
+ 		}
+ 	}
+@@ -1098,6 +1128,19 @@ nm_ip6_config_hash (const NMIP6Config *config, GChecksum *sum, gboolean dns_only
+ 	}
+ }
+ 
++/**
++ * nm_ip6_config_equal:
++ * @a: first config to compare
++ * @b: second config to compare
++ *
++ * Compares two #NMIP6Configs for basic equality.  This means that all
++ * attributes must exist in the same order in both configs (addresses, routes,
++ * domains, DNS servers, etc) but some attributes (address lifetimes, and address
++ * and route sources) are ignored.
++ *
++ * Returns: %TRUE if the configurations are basically equal to each other,
++ * %FALSE if not
++ */
+ gboolean
+ nm_ip6_config_equal (const NMIP6Config *a, const NMIP6Config *b)
+ {
+diff --git a/src/platform/nm-linux-platform.c b/src/platform/nm-linux-platform.c
+index dacdc16..fc85178 100644
+--- a/src/platform/nm-linux-platform.c
++++ b/src/platform/nm-linux-platform.c
+@@ -2308,6 +2308,7 @@ ip4_address_get_all (NMPlatform *platform, int ifindex)
+ 	for (object = nl_cache_get_first (priv->address_cache); object; object = nl_cache_get_next (object)) {
+ 		if (nl_object_is_marked (object)) {
+ 			init_ip4_address (&address, (struct rtnl_addr *) object);
++			address.source = NM_PLATFORM_SOURCE_KERNEL;
+ 			g_array_append_val (addresses, address);
+ 			nl_object_unmark (object);
+ 		}
+@@ -2331,6 +2332,7 @@ ip6_address_get_all (NMPlatform *platform, int ifindex)
+ 	for (object = nl_cache_get_first (priv->address_cache); object; object = nl_cache_get_next (object)) {
+ 		if (nl_object_is_marked (object)) {
+ 			init_ip6_address (&address, (struct rtnl_addr *) object);
++			address.source = NM_PLATFORM_SOURCE_KERNEL;
+ 			g_array_append_val (addresses, address);
+ 			nl_object_unmark (object);
+ 		}
+@@ -2533,6 +2535,7 @@ ip4_route_get_all (NMPlatform *platform, int ifindex, gboolean include_default)
+ 	for (object = nl_cache_get_first (priv->route_cache); object; object = nl_cache_get_next (object)) {
+ 		if (nl_object_is_marked (object)) {
+ 			if (init_ip4_route (&route, (struct rtnl_route *) object)) {
++				route.source = NM_PLATFORM_SOURCE_KERNEL;
+ 				if (route.plen != 0 || include_default)
+ 					g_array_append_val (routes, route);
+ 			}
+@@ -2558,6 +2561,7 @@ ip6_route_get_all (NMPlatform *platform, int ifindex, gboolean include_default)
+ 	for (object = nl_cache_get_first (priv->route_cache); object; object = nl_cache_get_next (object)) {
+ 		if (nl_object_is_marked (object)) {
+ 			if (init_ip6_route (&route, (struct rtnl_route *) object)) {
++				route.source = NM_PLATFORM_SOURCE_KERNEL;
+ 				if (route.plen != 0 || include_default)
+ 					g_array_append_val (routes, route);
+ 			}
+diff --git a/src/platform/nm-platform.c b/src/platform/nm-platform.c
+index 0ac304d..72bbfe6 100644
+--- a/src/platform/nm-platform.c
++++ b/src/platform/nm-platform.c
+@@ -1567,9 +1567,15 @@ array_contains_ip4_route (const GArray *routes, const NMPlatformIP4Route *route)
+ 	guint len = routes ? routes->len : 0;
+ 	guint i;
+ 
+-	for (i = 0; i < len; i++)
+-		if (!memcmp (&g_array_index (routes, NMPlatformIP4Route, i), route, sizeof (*route)))
++	for (i = 0; i < len; i++) {
++		NMPlatformIP4Route *c = &g_array_index (routes, NMPlatformIP4Route, i);
++
++		if (route->network == c->network &&
++		    route->plen == c->plen &&
++		    route->gateway == c->gateway &&
++		    route->metric == c->metric)
+ 			return TRUE;
++	}
+ 
+ 	return FALSE;
+ }
+@@ -1580,9 +1586,15 @@ array_contains_ip6_route (const GArray *routes, const NMPlatformIP6Route *route)
+ 	guint len = routes ? routes->len : 0;
+ 	guint i;
+ 
+-	for (i = 0; i < len; i++)
+-		if (!memcmp (&g_array_index (routes, NMPlatformIP6Route, i), route, sizeof (*route)))
++	for (i = 0; i < len; i++) {
++		NMPlatformIP6Route *c = &g_array_index (routes, NMPlatformIP6Route, i);
++
++		if (IN6_ARE_ADDR_EQUAL (&route->network, &c->network) &&
++		    route->plen == c->plen &&
++		    IN6_ARE_ADDR_EQUAL (&route->gateway, &c->gateway) &&
++		    route->metric == c->metric)
+ 			return TRUE;
++	}
+ 
+ 	return FALSE;
+ }
+@@ -1611,7 +1623,6 @@ nm_platform_ip4_route_sync (int ifindex, const GArray *known_routes)
+ 	routes = nm_platform_ip4_route_get_all (ifindex, FALSE);
+ 	for (i = 0; i < routes->len; i++) {
+ 		route = &g_array_index (routes, NMPlatformIP4Route, i);
+-		route->ifindex = 0;
+ 
+ 		if (!array_contains_ip4_route (known_routes, route))
+ 			nm_platform_ip4_route_delete (ifindex, route->network, route->plen, route->metric);
+@@ -1725,6 +1736,34 @@ _to_string_dev (int ifindex, char *buf, size_t size)
+ 		buf[0] = 0;
+ }
+ 
++static const char *
++source_to_string (NMPlatformSource source)
++{
++	switch (source) {
++	case NM_PLATFORM_SOURCE_KERNEL:
++		return "kernel";
++	case NM_PLATFORM_SOURCE_SHARED:
++		return "shared";
++	case NM_PLATFORM_SOURCE_IP4LL:
++		return "ipv4ll";
++	case NM_PLATFORM_SOURCE_PPP:
++		return "ppp";
++	case NM_PLATFORM_SOURCE_WWAN:
++		return "wwan";
++	case NM_PLATFORM_SOURCE_VPN:
++		return "vpn";
++	case NM_PLATFORM_SOURCE_DHCP:
++		return "dhcp";
++	case NM_PLATFORM_SOURCE_RDISC:
++		return "rdisc";
++	case NM_PLATFORM_SOURCE_USER:
++		return "user";
++	default:
++		break;
++	}
++	return "unknown";
++}
++
+ /**
+  * nm_platform_ip4_address_to_string:
+  * @route: pointer to NMPlatformIP4Address address structure
+@@ -1757,11 +1796,12 @@ nm_platform_ip4_address_to_string (const NMPlatformIP4Address *address)
+ 
+ 	_to_string_dev (address->ifindex, str_dev, sizeof (str_dev));
+ 
+-	g_snprintf (buffer, sizeof (buffer), "%s/%d lft %u pref %u time %u%s%s",
++	g_snprintf (buffer, sizeof (buffer), "%s/%d lft %u pref %u time %u%s%s src %s",
+ 	            s_address, address->plen, (guint)address->lifetime, (guint)address->preferred,
+ 	            (guint)address->timestamp,
+ 	            str_peer ? str_peer : "",
+-	            str_dev);
++	            str_dev,
++	            source_to_string (address->source));
+ 	g_free (str_peer);
+ 	return buffer;
+ }
+@@ -1818,12 +1858,13 @@ nm_platform_ip6_address_to_string (const NMPlatformIP6Address *address)
+ 
+ 	str_flags = s_flags[0] ? g_strconcat (" flags ", s_flags, NULL) : NULL;
+ 
+-	g_snprintf (buffer, sizeof (buffer), "%s/%d lft %u pref %u time %u%s%s%s",
++	g_snprintf (buffer, sizeof (buffer), "%s/%d lft %u pref %u time %u%s%s%s src %s",
+ 	            s_address, address->plen, (guint)address->lifetime, (guint)address->preferred,
+ 	            (guint)address->timestamp,
+ 	            str_peer ? str_peer : "",
+ 	            str_dev,
+-	            str_flags ? str_flags : "");
++	            str_flags ? str_flags : "",
++	            source_to_string (address->source));
+ 	g_free (str_flags);
+ 	g_free (str_peer);
+ 	return buffer;
+@@ -1855,10 +1896,11 @@ nm_platform_ip4_route_to_string (const NMPlatformIP4Route *route)
+ 
+ 	_to_string_dev (route->ifindex, str_dev, sizeof (str_dev));
+ 
+-	g_snprintf (buffer, sizeof (buffer), "%s/%d via %s%s metric %u mss %u",
++	g_snprintf (buffer, sizeof (buffer), "%s/%d via %s%s metric %u mss %u src %s",
+ 	            s_network, route->plen, s_gateway,
+ 	            str_dev,
+-	            route->metric, route->mss);
++	            route->metric, route->mss,
++	            source_to_string (route->source));
+ 	return buffer;
+ }
+ 
+@@ -1888,10 +1930,11 @@ nm_platform_ip6_route_to_string (const NMPlatformIP6Route *route)
+ 
+ 	_to_string_dev (route->ifindex, str_dev, sizeof (str_dev));
+ 
+-	g_snprintf (buffer, sizeof (buffer), "%s/%d via %s%s metric %u mss %u",
++	g_snprintf (buffer, sizeof (buffer), "%s/%d via %s%s metric %u mss %u src %s",
+ 	            s_network, route->plen, s_gateway,
+ 	            str_dev,
+-	            route->metric, route->mss);
++	            route->metric, route->mss,
++	            source_to_string (route->source));
+ 	return buffer;
+ }
+ 
+@@ -1923,9 +1966,10 @@ int
+ nm_platform_ip4_address_cmp (const NMPlatformIP4Address *a, const NMPlatformIP4Address *b)
+ {
+ 	_CMP_POINTER (a, b);
++	_CMP_FIELD (a, b, ifindex);
++	_CMP_FIELD (a, b, source);
+ 	_CMP_FIELD_MEMCMP (a, b, address);
+ 	_CMP_FIELD_MEMCMP (a, b, peer_address);
+-	_CMP_FIELD (a, b, ifindex);
+ 	_CMP_FIELD (a, b, plen);
+ 	_CMP_FIELD (a, b, timestamp);
+ 	_CMP_FIELD (a, b, lifetime);
+@@ -1938,6 +1982,7 @@ nm_platform_ip6_address_cmp (const NMPlatformIP6Address *a, const NMPlatformIP6A
+ {
+ 	_CMP_POINTER (a, b);
+ 	_CMP_FIELD (a, b, ifindex);
++	_CMP_FIELD (a, b, source);
+ 	_CMP_FIELD_MEMCMP (a, b, address);
+ 	_CMP_FIELD_MEMCMP (a, b, peer_address);
+ 	_CMP_FIELD (a, b, plen);
+@@ -1953,6 +1998,7 @@ nm_platform_ip4_route_cmp (const NMPlatformIP4Route *a, const NMPlatformIP4Route
+ {
+ 	_CMP_POINTER (a, b);
+ 	_CMP_FIELD (a, b, ifindex);
++	_CMP_FIELD (a, b, source);
+ 	_CMP_FIELD_MEMCMP (a, b, network);
+ 	_CMP_FIELD (a, b, plen);
+ 	_CMP_FIELD_MEMCMP (a, b, gateway);
+@@ -1966,6 +2012,7 @@ nm_platform_ip6_route_cmp (const NMPlatformIP6Route *a, const NMPlatformIP6Route
+ {
+ 	_CMP_POINTER (a, b);
+ 	_CMP_FIELD (a, b, ifindex);
++	_CMP_FIELD (a, b, source);
+ 	_CMP_FIELD_MEMCMP (a, b, network);
+ 	_CMP_FIELD (a, b, plen);
+ 	_CMP_FIELD_MEMCMP (a, b, gateway);
+diff --git a/src/platform/nm-platform.h b/src/platform/nm-platform.h
+index 2725dd9..c4796f1 100644
+--- a/src/platform/nm-platform.h
++++ b/src/platform/nm-platform.h
+@@ -126,8 +126,23 @@ typedef struct {
+ 
+ #define NM_PLATFORM_LIFETIME_PERMANENT G_MAXUINT32
+ 
++typedef enum {
++	/* In priority order; higher number == higher priority */
++	NM_PLATFORM_SOURCE_UNKNOWN,
++	NM_PLATFORM_SOURCE_KERNEL,
++	NM_PLATFORM_SOURCE_SHARED,
++	NM_PLATFORM_SOURCE_IP4LL,
++	NM_PLATFORM_SOURCE_PPP,
++	NM_PLATFORM_SOURCE_WWAN,
++	NM_PLATFORM_SOURCE_VPN,
++	NM_PLATFORM_SOURCE_DHCP,
++	NM_PLATFORM_SOURCE_RDISC,
++	NM_PLATFORM_SOURCE_USER,
++} NMPlatformSource;
++
+ typedef struct {
+ 	int ifindex;
++	NMPlatformSource source;
+ 	in_addr_t address;
+ 	in_addr_t peer_address;  /* PTP peer address */
+ 	int plen;
+@@ -138,6 +153,7 @@ typedef struct {
+ 
+ typedef struct {
+ 	int ifindex;
++	NMPlatformSource source;
+ 	struct in6_addr address;
+ 	struct in6_addr peer_address;
+ 	int plen;
+@@ -149,6 +165,7 @@ typedef struct {
+ 
+ typedef struct {
+ 	int ifindex;
++	NMPlatformSource source;
+ 	in_addr_t network;
+ 	int plen;
+ 	in_addr_t gateway;
+@@ -158,6 +175,7 @@ typedef struct {
+ 
+ typedef struct {
+ 	int ifindex;
++	NMPlatformSource source;
+ 	struct in6_addr network;
+ 	int plen;
+ 	struct in6_addr gateway;
+diff --git a/src/ppp-manager/nm-ppp-manager.c b/src/ppp-manager/nm-ppp-manager.c
+index 7b84937..cf085a8 100644
+--- a/src/ppp-manager/nm-ppp-manager.c
++++ b/src/ppp-manager/nm-ppp-manager.c
+@@ -550,6 +550,7 @@ impl_ppp_manager_set_ip4_config (NMPPPManager *manager,
+ 		address.plen = g_value_get_uint (val);
+ 
+ 	if (address.address && address.plen) {
++		address.source = NM_PLATFORM_SOURCE_PPP;
+ 		nm_ip4_config_add_address (config, &address);
+ 	} else {
+ 		nm_log_err (LOGD_PPP, "invalid IPv4 address received!");
+diff --git a/src/tests/test-ip4-config.c b/src/tests/test-ip4-config.c
+index 1f2c968..dc3d2a0 100644
+--- a/src/tests/test-ip4-config.c
++++ b/src/tests/test-ip4-config.c
+@@ -220,6 +220,119 @@ test_merge_subtract_mss_mtu (void)
+ 	g_object_unref (cfg3);
+ }
+ 
++static void
++test_compare_with_source (void)
++{
++	NMIP4Config *a, *b;
++	NMPlatformIP4Address addr;
++	NMPlatformIP4Route route;
++
++	a = nm_ip4_config_new ();
++	b = nm_ip4_config_new ();
++
++	/* Address */
++	addr_init (&addr, "1.2.3.4", NULL, 24);
++	addr.source = NM_PLATFORM_SOURCE_USER;
++	nm_ip4_config_add_address (a, &addr);
++
++	addr.source = NM_PLATFORM_SOURCE_VPN;
++	nm_ip4_config_add_address (b, &addr);
++
++	/* Route */
++	route_new (&route, "10.0.0.0", 8, "192.168.1.1");
++	route.source = NM_PLATFORM_SOURCE_USER;
++	nm_ip4_config_add_route (a, &route);
++
++	route.source = NM_PLATFORM_SOURCE_VPN;
++	nm_ip4_config_add_route (b, &route);
++
++	/* Assert that the configs are basically the same, eg that the source is ignored */
++	g_assert (nm_ip4_config_equal (a, b));
++
++	g_object_unref (a);
++	g_object_unref (b);
++}
++
++static void
++test_add_address_with_source (void)
++{
++	NMIP4Config *a;
++	NMPlatformIP4Address addr;
++	const NMPlatformIP4Address *test_addr;
++
++	a = nm_ip4_config_new ();
++
++	/* Test that a higher priority source is not overwritten */
++	addr_init (&addr, "1.2.3.4", NULL, 24);
++	addr.source = NM_PLATFORM_SOURCE_USER;
++	nm_ip4_config_add_address (a, &addr);
++
++	test_addr = nm_ip4_config_get_address (a, 0);
++	g_assert_cmpint (test_addr->source, ==, NM_PLATFORM_SOURCE_USER);
++
++	addr.source = NM_PLATFORM_SOURCE_VPN;
++	nm_ip4_config_add_address (a, &addr);
++
++	test_addr = nm_ip4_config_get_address (a, 0);
++	g_assert_cmpint (test_addr->source, ==, NM_PLATFORM_SOURCE_USER);
++
++	/* Test that a lower priority address source is overwritten */
++	nm_ip4_config_del_address (a, 0);
++	addr.source = NM_PLATFORM_SOURCE_KERNEL;
++	nm_ip4_config_add_address (a, &addr);
++
++	test_addr = nm_ip4_config_get_address (a, 0);
++	g_assert_cmpint (test_addr->source, ==, NM_PLATFORM_SOURCE_KERNEL);
++
++	addr.source = NM_PLATFORM_SOURCE_USER;
++	nm_ip4_config_add_address (a, &addr);
++
++	test_addr = nm_ip4_config_get_address (a, 0);
++	g_assert_cmpint (test_addr->source, ==, NM_PLATFORM_SOURCE_USER);
++
++	g_object_unref (a);
++}
++
++static void
++test_add_route_with_source (void)
++{
++	NMIP4Config *a;
++	NMPlatformIP4Route route;
++	const NMPlatformIP4Route *test_route;
++
++	a = nm_ip4_config_new ();
++
++	/* Test that a higher priority source is not overwritten */
++	route_new (&route, "1.2.3.4", 24, "1.2.3.1");
++	route.source = NM_PLATFORM_SOURCE_USER;
++	nm_ip4_config_add_route (a, &route);
++
++	test_route = nm_ip4_config_get_route (a, 0);
++	g_assert_cmpint (test_route->source, ==, NM_PLATFORM_SOURCE_USER);
++
++	route.source = NM_PLATFORM_SOURCE_VPN;
++	nm_ip4_config_add_route (a, &route);
++
++	test_route = nm_ip4_config_get_route (a, 0);
++	g_assert_cmpint (test_route->source, ==, NM_PLATFORM_SOURCE_USER);
++
++	/* Test that a lower priority address source is overwritten */
++	nm_ip4_config_del_route (a, 0);
++	route.source = NM_PLATFORM_SOURCE_KERNEL;
++	nm_ip4_config_add_route (a, &route);
++
++	test_route = nm_ip4_config_get_route (a, 0);
++	g_assert_cmpint (test_route->source, ==, NM_PLATFORM_SOURCE_KERNEL);
++
++	route.source = NM_PLATFORM_SOURCE_USER;
++	nm_ip4_config_add_route (a, &route);
++
++	test_route = nm_ip4_config_get_route (a, 0);
++	g_assert_cmpint (test_route->source, ==, NM_PLATFORM_SOURCE_USER);
++
++	g_object_unref (a);
++}
++
+ /*******************************************/
+ 
+ int
+@@ -231,6 +344,9 @@ main (int argc, char **argv)
+ 
+ 	g_test_add_func ("/ip4-config/subtract", test_subtract);
+ 	g_test_add_func ("/ip4-config/merge-subtract-mss-mtu", test_merge_subtract_mss_mtu);
++	g_test_add_func ("/ip4-config/compare-with-source", test_compare_with_source);
++	g_test_add_func ("/ip4-config/add-address-with-source", test_add_address_with_source);
++	g_test_add_func ("/ip4-config/add-route-with-source", test_add_route_with_source);
+ 
+ 	return g_test_run ();
+ }
+diff --git a/src/tests/test-ip6-config.c b/src/tests/test-ip6-config.c
+index b8b9c7b..c79ac20 100644
+--- a/src/tests/test-ip6-config.c
++++ b/src/tests/test-ip6-config.c
+@@ -160,6 +160,119 @@ test_subtract (void)
+ 	g_object_unref (dst);
+ }
+ 
++static void
++test_compare_with_source (void)
++{
++	NMIP6Config *a, *b;
++	NMPlatformIP6Address addr;
++	NMPlatformIP6Route route;
++
++	a = nm_ip6_config_new ();
++	b = nm_ip6_config_new ();
++
++	/* Address */
++	addr_init (&addr, "1122:3344:5566::7788", NULL, 64);
++	addr.source = NM_PLATFORM_SOURCE_USER;
++	nm_ip6_config_add_address (a, &addr);
++
++	addr.source = NM_PLATFORM_SOURCE_VPN;
++	nm_ip6_config_add_address (b, &addr);
++
++	/* Route */
++	route_new (&route, "abcd:1234:4321::", 24, "abcd:1234:4321:cdde::2");
++	route.source = NM_PLATFORM_SOURCE_USER;
++	nm_ip6_config_add_route (a, &route);
++
++	route.source = NM_PLATFORM_SOURCE_VPN;
++	nm_ip6_config_add_route (b, &route);
++
++	/* Assert that the configs are basically the same, eg that the source is ignored */
++	g_assert (nm_ip6_config_equal (a, b));
++
++	g_object_unref (a);
++	g_object_unref (b);
++}
++
++static void
++test_add_address_with_source (void)
++{
++	NMIP6Config *a;
++	NMPlatformIP6Address addr;
++	const NMPlatformIP6Address *test_addr;
++
++	a = nm_ip6_config_new ();
++
++	/* Test that a higher priority source is not overwritten */
++	addr_init (&addr, "1122:3344:5566::7788", NULL, 64);
++	addr.source = NM_PLATFORM_SOURCE_USER;
++	nm_ip6_config_add_address (a, &addr);
++
++	test_addr = nm_ip6_config_get_address (a, 0);
++	g_assert_cmpint (test_addr->source, ==, NM_PLATFORM_SOURCE_USER);
++
++	addr.source = NM_PLATFORM_SOURCE_VPN;
++	nm_ip6_config_add_address (a, &addr);
++
++	test_addr = nm_ip6_config_get_address (a, 0);
++	g_assert_cmpint (test_addr->source, ==, NM_PLATFORM_SOURCE_USER);
++
++	/* Test that a lower priority address source is overwritten */
++	nm_ip6_config_del_address (a, 0);
++	addr.source = NM_PLATFORM_SOURCE_KERNEL;
++	nm_ip6_config_add_address (a, &addr);
++
++	test_addr = nm_ip6_config_get_address (a, 0);
++	g_assert_cmpint (test_addr->source, ==, NM_PLATFORM_SOURCE_KERNEL);
++
++	addr.source = NM_PLATFORM_SOURCE_USER;
++	nm_ip6_config_add_address (a, &addr);
++
++	test_addr = nm_ip6_config_get_address (a, 0);
++	g_assert_cmpint (test_addr->source, ==, NM_PLATFORM_SOURCE_USER);
++
++	g_object_unref (a);
++}
++
++static void
++test_add_route_with_source (void)
++{
++	NMIP6Config *a;
++	NMPlatformIP6Route route;
++	const NMPlatformIP6Route *test_route;
++
++	a = nm_ip6_config_new ();
++
++	/* Test that a higher priority source is not overwritten */
++	route_new (&route, "abcd:1234:4321::", 24, "abcd:1234:4321:cdde::2");
++	route.source = NM_PLATFORM_SOURCE_USER;
++	nm_ip6_config_add_route (a, &route);
++
++	test_route = nm_ip6_config_get_route (a, 0);
++	g_assert_cmpint (test_route->source, ==, NM_PLATFORM_SOURCE_USER);
++
++	route.source = NM_PLATFORM_SOURCE_VPN;
++	nm_ip6_config_add_route (a, &route);
++
++	test_route = nm_ip6_config_get_route (a, 0);
++	g_assert_cmpint (test_route->source, ==, NM_PLATFORM_SOURCE_USER);
++
++	/* Test that a lower priority address source is overwritten */
++	nm_ip6_config_del_route (a, 0);
++	route.source = NM_PLATFORM_SOURCE_KERNEL;
++	nm_ip6_config_add_route (a, &route);
++
++	test_route = nm_ip6_config_get_route (a, 0);
++	g_assert_cmpint (test_route->source, ==, NM_PLATFORM_SOURCE_KERNEL);
++
++	route.source = NM_PLATFORM_SOURCE_USER;
++	nm_ip6_config_add_route (a, &route);
++
++	test_route = nm_ip6_config_get_route (a, 0);
++	g_assert_cmpint (test_route->source, ==, NM_PLATFORM_SOURCE_USER);
++
++	g_object_unref (a);
++}
++
+ /*******************************************/
+ 
+ int
+@@ -170,6 +283,9 @@ main (int argc, char **argv)
+ 	g_type_init ();
+ 
+ 	g_test_add_func ("/ip6-config/subtract", test_subtract);
++	g_test_add_func ("/ip6-config/compare-with-source", test_compare_with_source);
++	g_test_add_func ("/ip6-config/add-address-with-source", test_add_address_with_source);
++	g_test_add_func ("/ip6-config/add-route-with-source", test_add_route_with_source);
+ 
+ 	return g_test_run ();
+ }
+diff --git a/src/vpn-manager/nm-vpn-connection.c b/src/vpn-manager/nm-vpn-connection.c
+index 30107a0..e8368a3 100644
+--- a/src/vpn-manager/nm-vpn-connection.c
++++ b/src/vpn-manager/nm-vpn-connection.c
+@@ -330,6 +330,7 @@ add_ip4_vpn_gateway_route (NMIP4Config *config, NMDevice *parent_device, guint32
+ 	if (nm_ip4_config_destination_is_direct (parent_config, vpn_gw, 32))
+ 		route.gateway = 0;
+ 
++	route.source = NM_PLATFORM_SOURCE_VPN;
+ 	nm_ip4_config_add_route (config, &route);
+ 
+ 	/* Ensure there's a route to the parent device's gateway through the
+@@ -340,6 +341,7 @@ add_ip4_vpn_gateway_route (NMIP4Config *config, NMDevice *parent_device, guint32
+ 	memset (&route, 0, sizeof (route));
+ 	route.network = parent_gw;
+ 	route.plen = 32;
++	route.source = NM_PLATFORM_SOURCE_VPN;
+ 
+ 	nm_ip4_config_add_route (config, &route);
+ }
+@@ -375,6 +377,7 @@ add_ip6_vpn_gateway_route (NMIP6Config *config,
+ 	if (nm_ip6_config_destination_is_direct (parent_config, vpn_gw, 128))
+ 		route.gateway = in6addr_any;
+ 
++	route.source = NM_PLATFORM_SOURCE_VPN;
+ 	nm_ip6_config_add_route (config, &route);
+ 
+ 	/* Ensure there's a route to the parent device's gateway through the
+@@ -385,6 +388,7 @@ add_ip6_vpn_gateway_route (NMIP6Config *config,
+ 	memset (&route, 0, sizeof (route));
+ 	route.network = *parent_gw;
+ 	route.plen = 128;
++	route.source = NM_PLATFORM_SOURCE_VPN;
+ 
+ 	nm_ip6_config_add_route (config, &route);
+ }
+@@ -982,6 +986,7 @@ nm_vpn_connection_ip4_config_get (DBusGProxy *proxy,
+ 		address.plen = g_value_get_uint (val);
+ 
+ 	if (address.address && address.plen) {
++		address.source = NM_PLATFORM_SOURCE_VPN;
+ 		nm_ip4_config_add_address (config, &address);
+ 	} else {
+ 		nm_log_err (LOGD_VPN, "invalid IP4 config received!");
+@@ -1040,6 +1045,7 @@ nm_vpn_connection_ip4_config_get (DBusGProxy *proxy,
+ 			route.network = nm_ip4_route_get_dest (item);
+ 			route.plen = nm_ip4_route_get_prefix (item);
+ 			route.gateway = nm_ip4_route_get_next_hop (item);
++			route.source = NM_PLATFORM_SOURCE_VPN;
+ 
+ 			/* Ignore host routes to the VPN gateway since NM adds one itself
+ 			 * below.  Since NM knows more about the routing situation than
+@@ -1132,9 +1138,10 @@ nm_vpn_connection_ip6_config_get (DBusGProxy *proxy,
+ 	if (val)
+ 		address.plen = g_value_get_uint (val);
+ 
+-	if (!IN6_IS_ADDR_UNSPECIFIED (&address.address) && address.plen)
++	if (!IN6_IS_ADDR_UNSPECIFIED (&address.address) && address.plen) {
++		address.source = NM_PLATFORM_SOURCE_VPN;
+ 		nm_ip6_config_add_address (config, &address);
+-	else {
++	} else {
+ 		nm_log_err (LOGD_VPN, "invalid IP6 config received!");
+ 		g_object_unref (config);
+ 		nm_vpn_connection_config_maybe_complete (connection, FALSE);
+@@ -1183,6 +1190,7 @@ nm_vpn_connection_ip6_config_get (DBusGProxy *proxy,
+ 			route.network = *nm_ip6_route_get_dest (item);
+ 			route.plen = nm_ip6_route_get_prefix (item);
+ 			route.gateway = *nm_ip6_route_get_next_hop (item);
++			route.source = NM_PLATFORM_SOURCE_VPN;
+ 
+ 			/* Ignore host routes to the VPN gateway since NM adds one itself
+ 			 * below.  Since NM knows more about the routing situation than
+-- 
+1.9.3
+

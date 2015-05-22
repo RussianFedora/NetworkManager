@@ -1,0 +1,873 @@
+From c1dfa412dccec7ce2a27a1da36b2e0e4679cbc6a Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Ji=C5=99=C3=AD=20Klime=C5=A1?= <jklimes@redhat.com>
+Date: Tue, 1 Apr 2014 14:53:00 +0200
+Subject: [PATCH 1/5] trivial: make clear the maximum bitrate is in kbit/s
+
+(cherry picked from commit 759236681ca1d1a472c136aef4c571a0ee954056)
+---
+ libnm-glib/nm-access-point.c | 6 +++---
+ libnm-glib/nm-device-wifi.c  | 6 +++---
+ src/nm-wifi-ap.c             | 2 +-
+ 3 files changed, 7 insertions(+), 7 deletions(-)
+
+diff --git a/libnm-glib/nm-access-point.c b/libnm-glib/nm-access-point.c
+index 56dcb11..6c090c0 100644
+--- a/libnm-glib/nm-access-point.c
++++ b/libnm-glib/nm-access-point.c
+@@ -236,9 +236,9 @@ nm_access_point_get_mode (NMAccessPoint *ap)
+  * nm_access_point_get_max_bitrate:
+  * @ap: a #NMAccessPoint
+  *
+- * Gets the maximum bit rate of the access point.
++ * Gets the maximum bit rate of the access point in kbit/s.
+  *
+- * Returns: the maximum bit rate
++ * Returns: the maximum bit rate (kbit/s)
+  **/
+ guint32
+ nm_access_point_get_max_bitrate (NMAccessPoint *ap)
+@@ -661,7 +661,7 @@ nm_access_point_class_init (NMAccessPointClass *ap_class)
+ 	/**
+ 	 * NMAccessPoint:max-bitrate:
+ 	 *
+-	 * The maximum bit rate of the access point.
++	 * The maximum bit rate of the access point in kbit/s.
+ 	 **/
+ 	g_object_class_install_property
+ 		(object_class, PROP_MAX_BITRATE,
+diff --git a/libnm-glib/nm-device-wifi.c b/libnm-glib/nm-device-wifi.c
+index cda8eb0..8ffdf42 100644
+--- a/libnm-glib/nm-device-wifi.c
++++ b/libnm-glib/nm-device-wifi.c
+@@ -185,9 +185,9 @@ nm_device_wifi_get_mode (NMDeviceWifi *device)
+  * nm_device_wifi_get_bitrate:
+  * @device: a #NMDeviceWifi
+  *
+- * Gets the bit rate of the #NMDeviceWifi.
++ * Gets the bit rate of the #NMDeviceWifi in kbit/s.
+  *
+- * Returns: the bit rate
++ * Returns: the bit rate (kbit/s)
+  **/
+ guint32
+ nm_device_wifi_get_bitrate (NMDeviceWifi *device)
+@@ -744,7 +744,7 @@ nm_device_wifi_class_init (NMDeviceWifiClass *wifi_class)
+ 	/**
+ 	 * NMDeviceWifi:bitrate:
+ 	 *
+-	 * The bit rate of the device.
++	 * The bit rate of the device in kbit/s.
+ 	 **/
+ 	g_object_class_install_property
+ 		(object_class, PROP_BITRATE,
+diff --git a/src/nm-wifi-ap.c b/src/nm-wifi-ap.c
+index fb12754..06be315 100644
+--- a/src/nm-wifi-ap.c
++++ b/src/nm-wifi-ap.c
+@@ -1023,7 +1023,7 @@ nm_ap_set_freq (NMAccessPoint *ap,
+ 
+ 
+ /*
+- * Get/set functions for max bitrate
++ * Get/set functions for max bitrate (in kbit/s)
+  *
+  */
+ guint32 nm_ap_get_max_bitrate (NMAccessPoint *ap)
+-- 
+1.9.0
+
+
+From 0bcda31fe413ee681b02ce131fa3d47f319861f1 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Ji=C5=99=C3=AD=20Klime=C5=A1?= <jklimes@redhat.com>
+Date: Tue, 1 Apr 2014 14:56:32 +0200
+Subject: [PATCH 2/5] nmcli: use correct Mbit/s units for maximal bitrate (rh
+ #1080474)
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1080474
+(cherry picked from commit c1e5493117dac1c57e02b0f30c12a0f8903133c3)
+---
+ cli/src/devices.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/cli/src/devices.c b/cli/src/devices.c
+index bcbf287..03eefbc 100644
+--- a/cli/src/devices.c
++++ b/cli/src/devices.c
+@@ -433,7 +433,7 @@ fill_output_access_point (gpointer data, gpointer user_data)
+ 	}
+ 	channel_str = g_strdup_printf ("%u", nm_utils_wifi_freq_to_channel (freq));
+ 	freq_str = g_strdup_printf (_("%u MHz"), freq);
+-	bitrate_str = g_strdup_printf (_("%u MB/s"), bitrate/1000);
++	bitrate_str = g_strdup_printf (_("%u Mbit/s"), bitrate/1000);
+ 	strength_str = g_strdup_printf ("%u", strength);
+ 	wpa_flags_str = ap_wpa_rsn_flags_to_string (wpa_flags);
+ 	rsn_flags_str = ap_wpa_rsn_flags_to_string (rsn_flags);
+-- 
+1.9.0
+
+
+From 73abea116465955c64550e49629159ed7098a63f Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Ji=C5=99=C3=AD=20Klime=C5=A1?= <jklimes@redhat.com>
+Date: Tue, 1 Apr 2014 15:07:22 +0200
+Subject: [PATCH 3/5] examples: use correct Mbit/s for bitrates
+
+(cherry picked from commit 7211d82f7726824f7967242a104aa3a1f2fed4b3)
+---
+ examples/C/glib/get-ap-info-libnm-glib.c | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/examples/C/glib/get-ap-info-libnm-glib.c b/examples/C/glib/get-ap-info-libnm-glib.c
+index e72ce54..c144be2 100644
+--- a/examples/C/glib/get-ap-info-libnm-glib.c
++++ b/examples/C/glib/get-ap-info-libnm-glib.c
+@@ -105,7 +105,7 @@ show_access_point_info (NMAccessPoint *ap)
+ 	/* Convert to strings */
+ 	ssid_str = nm_utils_ssid_to_utf8 (ssid);
+ 	freq_str = g_strdup_printf ("%u MHz", freq);
+-	bitrate_str = g_strdup_printf ("%u MB/s", bitrate/1000);
++	bitrate_str = g_strdup_printf ("%u Mbit/s", bitrate/1000);
+ 	strength_str = g_strdup_printf ("%u", strength);
+ 	wpa_flags_str = ap_wpa_rsn_flags_to_string (wpa_flags);
+ 	rsn_flags_str = ap_wpa_rsn_flags_to_string (rsn_flags);
+@@ -178,7 +178,7 @@ show_wifi_device_info (NMDevice *device)
+ 	speed = nm_device_wifi_get_bitrate (NM_DEVICE_WIFI (device));
+ 	speed /= 1000;
+ 
+-	printf ("Device: %s  ----  Driver: %s  ----  Speed: %d MB/s  ----  Active AP: %s\n",
++	printf ("Device: %s  ----  Driver: %s  ----  Speed: %d Mbit/s  ----  Active AP: %s\n",
+ 	         iface, driver, speed, active_ssid_str ? active_ssid_str : "none");
+ 	printf ("=================================================================================\n");
+ 	g_free (active_ssid_str);
+-- 
+1.9.0
+
+
+From 884fb928636176fd9dc6c6e6bc5e0935c2411e6a Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Ji=C5=99=C3=AD=20Klime=C5=A1?= <jklimes@redhat.com>
+Date: Tue, 1 Apr 2014 15:09:34 +0200
+Subject: [PATCH 4/5] man: use correct Mbit/s for maximum bitrate in
+ nmcli-examples
+
+(cherry picked from commit b3cbb260ef601a37a7d986563f02646e1b00d660)
+
+Conflicts:
+	man/nmcli-examples.xml
+---
+ man/nmcli-examples.5 | 22 +++++++++++-----------
+ 1 file changed, 11 insertions(+), 11 deletions(-)
+
+diff --git a/man/nmcli-examples.5 b/man/nmcli-examples.5
+index 9d05ec6..44b5f4e 100644
+--- a/man/nmcli-examples.5
++++ b/man/nmcli-examples.5
+@@ -64,17 +64,17 @@ $ nmcli device wifi list
+ .\}
+ .nf
+ *  SSID               MODE    CHAN  RATE     SIGNAL  BARS  SECURITY
+-   netdatacomm_local  Infra   6     54 MB/s  37      ▂▄__  WEP
+-*  F1                 Infra   11    54 MB/s  98      ▂▄▆█  WPA1
+-   LoremCorp          Infra   1     54 MB/s  62      ▂▄▆_  WPA2 802\&.1X
+-   Internet           Infra   6     54 MB/s  29      ▂___  WPA1
+-   HPB110a\&.F2672A     Ad\-Hoc  6     54 MB/s  22      ▂___  \-\-
+-   Jozinet            Infra   1     54 MB/s  19      ▂___  WEP
+-   VOIP               Infra   1     54 MB/s  20      ▂___  WEP
+-   MARTINA            Infra   4     54 MB/s  32      ▂▄__  WPA2
+-   N24PU1             Infra   7     11 MB/s  22      ▂___  \-\-
+-   alfa               Infra   1     54 MB/s  67      ▂▄▆_  WPA2
+-   bertnet            Infra   5     54 MB/s  20      ▂___  WPA1 WPA2
++   netdatacomm_local  Infra   6     54 MBit/s  37      ▂▄__  WEP
++*  F1                 Infra   11    54 MBit/s  98      ▂▄▆█  WPA1
++   LoremCorp          Infra   1     54 MBit/s  62      ▂▄▆_  WPA2 802\&.1X
++   Internet           Infra   6     54 MBit/s  29      ▂___  WPA1
++   HPB110a\&.F2672A     Ad\-Hoc  6     54 MBit/s  22      ▂___  \-\-
++   Jozinet            Infra   1     54 MBit/s  19      ▂___  WEP
++   VOIP               Infra   1     54 MBit/s  20      ▂___  WEP
++   MARTINA            Infra   4     54 MBit/s  32      ▂▄__  WPA2
++   N24PU1             Infra   7     11 MBit/s  22      ▂___  \-\-
++   alfa               Infra   1     54 MBit/s  67      ▂▄▆_  WPA2
++   bertnet            Infra   5     54 MBit/s  20      ▂___  WPA1 WPA2
+       
+ .fi
+ .if n \{\
+-- 
+1.9.0
+
+
+From 88c40d47437cfa25d7a5075923096ba6c067bcfa Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Ji=C5=99=C3=AD=20Klime=C5=A1?= <jklimes@redhat.com>
+Date: Tue, 1 Apr 2014 15:12:09 +0200
+Subject: [PATCH 5/5] po: fix "MB/s" -> "Mbit/s"
+
+(cherry picked from commit cb80daa94225b5ef459b503768fa63463b33a5de)
+
+Conflicts:
+	po/as.po
+	po/uk.po
+---
+ po/as.po       | 4 ++--
+ po/bg.po       | 4 ++--
+ po/bn_IN.po    | 2 +-
+ po/ca.po       | 4 ++--
+ po/cs.po       | 4 ++--
+ po/da.po       | 4 ++--
+ po/de.po       | 4 ++--
+ po/el.po       | 4 ++--
+ po/en_GB.po    | 4 ++--
+ po/eo.po       | 4 ++--
+ po/es.po       | 4 ++--
+ po/eu.po       | 4 ++--
+ po/fi.po       | 2 +-
+ po/fr.po       | 2 +-
+ po/gl.po       | 4 ++--
+ po/gu.po       | 4 ++--
+ po/hi.po       | 4 ++--
+ po/hr.po       | 4 ++--
+ po/hu.po       | 4 ++--
+ po/id.po       | 4 ++--
+ po/it.po       | 4 ++--
+ po/ja.po       | 4 ++--
+ po/kn.po       | 4 ++--
+ po/ko.po       | 4 ++--
+ po/lt.po       | 4 ++--
+ po/ml.po       | 4 ++--
+ po/mr.po       | 4 ++--
+ po/or.po       | 4 ++--
+ po/pa.po       | 4 ++--
+ po/pl.po       | 4 ++--
+ po/pt_BR.po    | 4 ++--
+ po/ru.po       | 2 +-
+ po/sl.po       | 4 ++--
+ po/sr.po       | 4 ++--
+ po/sr@latin.po | 4 ++--
+ po/sv.po       | 4 ++--
+ po/ta.po       | 4 ++--
+ po/te.po       | 4 ++--
+ po/tr.po       | 4 ++--
+ po/uk.po       | 2 +-
+ po/zh_CN.po    | 4 ++--
+ po/zh_TW.po    | 4 ++--
+ 42 files changed, 79 insertions(+), 79 deletions(-)
+
+diff --git a/po/as.po b/po/as.po
+index 2e62dff..c6dc17b 100644
+--- a/po/as.po
++++ b/po/as.po
+@@ -1723,8 +1723,8 @@ msgstr "%u MHz"
+ 
+ #: ../cli/src/devices.c:417
+ #, c-format
+-msgid "%u MB/s"
+-msgstr "%u MB/s"
++msgid "%u MBit/s"
++msgstr "%u MBit/s"
+ 
+ #: ../cli/src/devices.c:426
+ msgid "Encrypted: "
+diff --git a/po/bg.po b/po/bg.po
+index cda45f1..0269643 100644
+--- a/po/bg.po
++++ b/po/bg.po
+@@ -774,8 +774,8 @@ msgstr "%u MHz"
+ 
+ #: ../cli/src/devices.c:431
+ #, c-format
+-msgid "%u MB/s"
+-msgstr "%u MB/s"
++msgid "%u Mbit/s"
++msgstr "%u Mbit/s"
+ 
+ #: ../cli/src/devices.c:440
+ msgid "Encrypted: "
+diff --git a/po/bn_IN.po b/po/bn_IN.po
+index 6d3f830..02a511d 100644
+--- a/po/bn_IN.po
++++ b/po/bn_IN.po
+@@ -1170,7 +1170,7 @@ msgstr "%u MHz"
+ 
+ #: ../cli/src/devices.c:401
+ #, c-format
+-msgid "%u MB/s"
++msgid "%u Mbit/s"
+ msgstr "%u মেগাবাইট/সেকেন্ড"
+ 
+ #: ../cli/src/devices.c:410
+diff --git a/po/ca.po b/po/ca.po
+index d4e6c8e..c3940b9 100644
+--- a/po/ca.po
++++ b/po/ca.po
+@@ -766,8 +766,8 @@ msgstr "%u MHz"
+ 
+ #: ../cli/src/devices.c:431
+ #, c-format
+-msgid "%u MB/s"
+-msgstr "%u MB/s"
++msgid "%u Mbit/s"
++msgstr "%u Mbit/s"
+ 
+ #: ../cli/src/devices.c:440
+ msgid "Encrypted: "
+diff --git a/po/cs.po b/po/cs.po
+index 0cb1482..25b2be1 100644
+--- a/po/cs.po
++++ b/po/cs.po
+@@ -820,8 +820,8 @@ msgstr "%u MHz"
+ 
+ #: ../cli/src/devices.c:461
+ #, c-format
+-msgid "%u MB/s"
+-msgstr "%u MB/s"
++msgid "%u Mbit/s"
++msgstr "%u Mbit/s"
+ 
+ #: ../cli/src/devices.c:470
+ msgid "Encrypted: "
+diff --git a/po/da.po b/po/da.po
+index bbcde42..82f456c 100644
+--- a/po/da.po
++++ b/po/da.po
+@@ -797,8 +797,8 @@ msgstr "%u MHz"
+ 
+ #: ../cli/src/devices.c:395
+ #, c-format
+-msgid "%u MB/s"
+-msgstr "%u MB/s"
++msgid "%u Mbit/s"
++msgstr "%u Mbit/s"
+ 
+ #: ../cli/src/devices.c:404
+ msgid "Encrypted: "
+diff --git a/po/de.po b/po/de.po
+index 3eb730e..2162091 100644
+--- a/po/de.po
++++ b/po/de.po
+@@ -2701,8 +2701,8 @@ msgstr "%u MHz"
+ 
+ #: ../cli/src/devices.c:433
+ #, c-format
+-msgid "%u MB/s"
+-msgstr "%u MB/s"
++msgid "%u Mbit/s"
++msgstr "%u Mbit/s"
+ 
+ #: ../cli/src/devices.c:452
+ msgid "WPA1"
+diff --git a/po/el.po b/po/el.po
+index 355249d..db8cf54 100644
+--- a/po/el.po
++++ b/po/el.po
+@@ -1160,8 +1160,8 @@ msgstr "%u MHz"
+ 
+ #: ../cli/src/devices.c:380
+ #, c-format
+-msgid "%u MB/s"
+-msgstr "%u MB/s"
++msgid "%u Mbit/s"
++msgstr "%u Mbit/s"
+ 
+ #: ../cli/src/devices.c:389
+ msgid "Encrypted: "
+diff --git a/po/en_GB.po b/po/en_GB.po
+index 32235ce..3997ed5 100644
+--- a/po/en_GB.po
++++ b/po/en_GB.po
+@@ -1157,8 +1157,8 @@ msgstr "%u MHz"
+ 
+ #: ../cli/src/devices.c:380
+ #, c-format
+-msgid "%u MB/s"
+-msgstr "%u MB/s"
++msgid "%u Mbit/s"
++msgstr "%u Mbit/s"
+ 
+ #: ../cli/src/devices.c:389
+ msgid "Encrypted: "
+diff --git a/po/eo.po b/po/eo.po
+index 0284ae6..c466a5d 100644
+--- a/po/eo.po
++++ b/po/eo.po
+@@ -1122,8 +1122,8 @@ msgstr "%u MHz"
+ 
+ #: ../cli/src/devices.c:557
+ #, c-format
+-msgid "%u MB/s"
+-msgstr "%u MB/s"
++msgid "%u Mbit/s"
++msgstr "%u Mbit/s"
+ 
+ #: ../cli/src/devices.c:566
+ msgid "Encrypted: "
+diff --git a/po/es.po b/po/es.po
+index 5c1bde6..7b72529 100644
+--- a/po/es.po
++++ b/po/es.po
+@@ -814,8 +814,8 @@ msgstr "%u MHz"
+ 
+ #: ../cli/src/devices.c:461
+ #, c-format
+-msgid "%u MB/s"
+-msgstr "%u MB/s"
++msgid "%u Mbit/s"
++msgstr "%u Mbit/s"
+ 
+ #: ../cli/src/devices.c:470
+ msgid "Encrypted: "
+diff --git a/po/eu.po b/po/eu.po
+index 68b8204..20026f9 100644
+--- a/po/eu.po
++++ b/po/eu.po
+@@ -638,8 +638,8 @@ msgstr "%u MHz"
+ 
+ #: ../cli/src/devices.c:863
+ #, c-format
+-msgid "%u MB/s"
+-msgstr "%u MB/s"
++msgid "%u Mbit/s"
++msgstr "%u Mbit/s"
+ 
+ #: ../cli/src/devices.c:869 ../cli/src/devices.c:871
+ msgid "AP parameters"
+diff --git a/po/fi.po b/po/fi.po
+index 8a7517f..b4deae7 100644
+--- a/po/fi.po
++++ b/po/fi.po
+@@ -761,7 +761,7 @@ msgstr "%u MHz"
+ 
+ #: ../cli/src/devices.c:461
+ #, c-format
+-msgid "%u MB/s"
++msgid "%u Mbit/s"
+ msgstr ""
+ 
+ #: ../cli/src/devices.c:470
+diff --git a/po/fr.po b/po/fr.po
+index b56bf3f..378831e 100644
+--- a/po/fr.po
++++ b/po/fr.po
+@@ -787,7 +787,7 @@ msgstr "%u MHz"
+ 
+ #: ../cli/src/devices.c:461
+ #, c-format
+-msgid "%u MB/s"
++msgid "%u Mbit/s"
+ msgstr "%u Mo/s"
+ 
+ #: ../cli/src/devices.c:470
+diff --git a/po/gl.po b/po/gl.po
+index 310b66f..5dc613d 100644
+--- a/po/gl.po
++++ b/po/gl.po
+@@ -1210,8 +1210,8 @@ msgstr "%u MHz"
+ 
+ #: ../cli/src/devices.c:404
+ #, c-format
+-msgid "%u MB/s"
+-msgstr "%u MB/s"
++msgid "%u Mbit/s"
++msgstr "%u Mbit/s"
+ 
+ #: ../cli/src/devices.c:413
+ msgid "Encrypted: "
+diff --git a/po/gu.po b/po/gu.po
+index 9459218..eb3a185 100644
+--- a/po/gu.po
++++ b/po/gu.po
+@@ -1713,8 +1713,8 @@ msgstr "%u MHz"
+ 
+ #: ../cli/src/devices.c:417
+ #, c-format
+-msgid "%u MB/s"
+-msgstr "%u MB/s"
++msgid "%u Mbit/s"
++msgstr "%u Mbit/s"
+ 
+ #: ../cli/src/devices.c:426
+ msgid "Encrypted: "
+diff --git a/po/hi.po b/po/hi.po
+index aa0b3bf..c6e7938 100644
+--- a/po/hi.po
++++ b/po/hi.po
+@@ -1267,8 +1267,8 @@ msgstr "%u MHz"
+ 
+ #: ../cli/src/devices.c:418
+ #, c-format
+-msgid "%u MB/s"
+-msgstr "%u MB/s"
++msgid "%u Mbit/s"
++msgstr "%u Mbit/s"
+ 
+ #: ../cli/src/devices.c:427
+ msgid "Encrypted: "
+diff --git a/po/hr.po b/po/hr.po
+index 4e24565..3cc5e45 100644
+--- a/po/hr.po
++++ b/po/hr.po
+@@ -794,8 +794,8 @@ msgstr "%u MHz"
+ 
+ #: ../cli/src/devices.c:471
+ #, c-format
+-msgid "%u MB/s"
+-msgstr "%u MB/s"
++msgid "%u Mbit/s"
++msgstr "%u Mbit/s"
+ 
+ #: ../cli/src/devices.c:480
+ msgid "Encrypted: "
+diff --git a/po/hu.po b/po/hu.po
+index 237cce7..00d95bc 100644
+--- a/po/hu.po
++++ b/po/hu.po
+@@ -1257,8 +1257,8 @@ msgstr "%u MHz"
+ 
+ #: ../cli/src/devices.c:418
+ #, c-format
+-msgid "%u MB/s"
+-msgstr "%u MB/s"
++msgid "%u Mbit/s"
++msgstr "%u Mbit/s"
+ 
+ #: ../cli/src/devices.c:427
+ msgid "Encrypted: "
+diff --git a/po/id.po b/po/id.po
+index 42cc406..0288338 100644
+--- a/po/id.po
++++ b/po/id.po
+@@ -1135,8 +1135,8 @@ msgstr "%u MHz"
+ 
+ #: ../cli/src/devices.c:380
+ #, c-format
+-msgid "%u MB/s"
+-msgstr "%u MB/s"
++msgid "%u Mbit/s"
++msgstr "%u Mbit/s"
+ 
+ #: ../cli/src/devices.c:389
+ msgid "Encrypted: "
+diff --git a/po/it.po b/po/it.po
+index 6b2eb9e..867109a 100644
+--- a/po/it.po
++++ b/po/it.po
+@@ -2400,8 +2400,8 @@ msgstr "%u MHz"
+ 
+ #: ../cli/src/devices.c:433
+ #, c-format
+-msgid "%u MB/s"
+-msgstr "%u MB/s"
++msgid "%u Mbit/s"
++msgstr "%u Mbit/s"
+ 
+ #: ../cli/src/devices.c:452
+ msgid "WPA1"
+diff --git a/po/ja.po b/po/ja.po
+index 02d7515..ddf8578 100644
+--- a/po/ja.po
++++ b/po/ja.po
+@@ -2671,8 +2671,8 @@ msgstr "%u MHz"
+ 
+ #: ../cli/src/devices.c:433
+ #, c-format
+-msgid "%u MB/s"
+-msgstr "%u MB/s"
++msgid "%u Mbit/s"
++msgstr "%u Mbit/s"
+ 
+ #: ../cli/src/devices.c:452
+ msgid "WPA1"
+diff --git a/po/kn.po b/po/kn.po
+index e19c121..a1891fd 100644
+--- a/po/kn.po
++++ b/po/kn.po
+@@ -1665,8 +1665,8 @@ msgstr "%u MHz"
+ 
+ #: ../cli/src/devices.c:433
+ #, c-format
+-msgid "%u MB/s"
+-msgstr "%u MB/s"
++msgid "%u Mbit/s"
++msgstr "%u Mbit/s"
+ 
+ #: ../cli/src/devices.c:452
+ msgid "WPA1"
+diff --git a/po/ko.po b/po/ko.po
+index ba6bb0b..a5e95b4 100644
+--- a/po/ko.po
++++ b/po/ko.po
+@@ -780,8 +780,8 @@ msgstr "%u MHz"
+ 
+ #: ../cli/src/devices.c:471
+ #, c-format
+-msgid "%u MB/s"
+-msgstr "%u MB/s"
++msgid "%u Mbit/s"
++msgstr "%u Mbit/s"
+ 
+ #: ../cli/src/devices.c:480
+ msgid "Encrypted: "
+diff --git a/po/lt.po b/po/lt.po
+index 8b17832..bfa26a1 100644
+--- a/po/lt.po
++++ b/po/lt.po
+@@ -2837,8 +2837,8 @@ msgstr "%u MHz"
+ 
+ #: ../cli/src/devices.c:433
+ #, c-format
+-msgid "%u MB/s"
+-msgstr "%u MB/s"
++msgid "%u Mbit/s"
++msgstr "%u Mbit/s"
+ 
+ #: ../cli/src/devices.c:452
+ msgid "WPA1"
+diff --git a/po/ml.po b/po/ml.po
+index f5d6841..7a289a2 100644
+--- a/po/ml.po
++++ b/po/ml.po
+@@ -1211,8 +1211,8 @@ msgstr "%u MHz"
+ 
+ #: ../cli/src/devices.c:418
+ #, c-format
+-msgid "%u MB/s"
+-msgstr "%u MB/s"
++msgid "%u Mbit/s"
++msgstr "%u Mbit/s"
+ 
+ #: ../cli/src/devices.c:427
+ msgid "Encrypted: "
+diff --git a/po/mr.po b/po/mr.po
+index 45c81fc..e202592 100644
+--- a/po/mr.po
++++ b/po/mr.po
+@@ -2491,8 +2491,8 @@ msgstr "%u MHz"
+ 
+ #: ../cli/src/devices.c:433
+ #, c-format
+-msgid "%u MB/s"
+-msgstr "%u MB/s"
++msgid "%u Mbit/s"
++msgstr "%u Mbit/s"
+ 
+ #: ../cli/src/devices.c:452
+ msgid "WPA1"
+diff --git a/po/or.po b/po/or.po
+index ed220ec..5801d61 100644
+--- a/po/or.po
++++ b/po/or.po
+@@ -1727,8 +1727,8 @@ msgstr "%u MHz"
+ 
+ #: ../cli/src/devices.c:417
+ #, c-format
+-msgid "%u MB/s"
+-msgstr "%u MB/s"
++msgid "%u Mbit/s"
++msgstr "%u Mbit/s"
+ 
+ #: ../cli/src/devices.c:426
+ msgid "Encrypted: "
+diff --git a/po/pa.po b/po/pa.po
+index 0fd0275..3b8ee45 100644
+--- a/po/pa.po
++++ b/po/pa.po
+@@ -1213,8 +1213,8 @@ msgstr "%u MHz"
+ 
+ #: ../cli/src/devices.c:380
+ #, c-format
+-msgid "%u MB/s"
+-msgstr "%u MB/s"
++msgid "%u Mbit/s"
++msgstr "%u Mbit/s"
+ 
+ #: ../cli/src/devices.c:389
+ msgid "Encrypted: "
+diff --git a/po/pl.po b/po/pl.po
+index 7686ae4..9711670 100644
+--- a/po/pl.po
++++ b/po/pl.po
+@@ -2743,8 +2743,8 @@ msgstr "%u MHz"
+ 
+ #: ../cli/src/devices.c:433
+ #, c-format
+-msgid "%u MB/s"
+-msgstr "%u MB/s"
++msgid "%u Mbit/s"
++msgstr "%u Mbit/s"
+ 
+ #: ../cli/src/devices.c:452
+ msgid "WPA1"
+diff --git a/po/pt_BR.po b/po/pt_BR.po
+index e188af3..b4008b5 100644
+--- a/po/pt_BR.po
++++ b/po/pt_BR.po
+@@ -2753,8 +2753,8 @@ msgstr "%u MHz"
+ 
+ #: ../cli/src/devices.c:433
+ #, c-format
+-msgid "%u MB/s"
+-msgstr "%u MB/s"
++msgid "%u Mbit/s"
++msgstr "%u Mbit/s"
+ 
+ #: ../cli/src/devices.c:452
+ msgid "WPA1"
+diff --git a/po/ru.po b/po/ru.po
+index 56f3fce..490f69d 100644
+--- a/po/ru.po
++++ b/po/ru.po
+@@ -1165,7 +1165,7 @@ msgstr "%u МГц"
+ 
+ #: ../cli/src/devices.c:400
+ #, c-format
+-msgid "%u MB/s"
++msgid "%u Mbit/s"
+ msgstr "%u МБ/с"
+ 
+ #: ../cli/src/devices.c:409
+diff --git a/po/sl.po b/po/sl.po
+index 744beb3..ddd4e08 100644
+--- a/po/sl.po
++++ b/po/sl.po
+@@ -1274,8 +1274,8 @@ msgstr "%u MHz"
+ 
+ #: ../cli/src/devices.c:380
+ #, c-format
+-msgid "%u MB/s"
+-msgstr "%u MB/s"
++msgid "%u Mbit/s"
++msgstr "%u Mbit/s"
+ 
+ #: ../cli/src/devices.c:389
+ msgid "Encrypted: "
+diff --git a/po/sr.po b/po/sr.po
+index 160630c..baefbaf 100644
+--- a/po/sr.po
++++ b/po/sr.po
+@@ -711,8 +711,8 @@ msgstr "%u MHz"
+ 
+ #: ../cli/src/devices.c:394
+ #, c-format
+-msgid "%u MB/s"
+-msgstr "%u MB/s"
++msgid "%u Mbit/s"
++msgstr "%u Mbit/s"
+ 
+ #: ../cli/src/devices.c:403
+ msgid "Encrypted: "
+diff --git a/po/sr@latin.po b/po/sr@latin.po
+index 3158fac..b4f9f28 100644
+--- a/po/sr@latin.po
++++ b/po/sr@latin.po
+@@ -711,8 +711,8 @@ msgstr "%u MHz"
+ 
+ #: ../cli/src/devices.c:394
+ #, c-format
+-msgid "%u MB/s"
+-msgstr "%u MB/s"
++msgid "%u Mbit/s"
++msgstr "%u Mbit/s"
+ 
+ #: ../cli/src/devices.c:403
+ msgid "Encrypted: "
+diff --git a/po/sv.po b/po/sv.po
+index 9f66eb6..7bcc960 100644
+--- a/po/sv.po
++++ b/po/sv.po
+@@ -1229,8 +1229,8 @@ msgstr "%u MHz"
+ 
+ #: ../cli/src/devices.c:557
+ #, c-format
+-msgid "%u MB/s"
+-msgstr "%u MB/s"
++msgid "%u Mbit/s"
++msgstr "%u Mbit/s"
+ 
+ #: ../cli/src/devices.c:566
+ msgid "Encrypted: "
+diff --git a/po/ta.po b/po/ta.po
+index 058b8fd..16ba218 100644
+--- a/po/ta.po
++++ b/po/ta.po
+@@ -1266,8 +1266,8 @@ msgstr "%u MHz"
+ 
+ #: ../cli/src/devices.c:418
+ #, c-format
+-msgid "%u MB/s"
+-msgstr "%u MB/s"
++msgid "%u Mbit/s"
++msgstr "%u Mbit/s"
+ 
+ #: ../cli/src/devices.c:427
+ msgid "Encrypted: "
+diff --git a/po/te.po b/po/te.po
+index 5ba12a0..d4fa28d 100644
+--- a/po/te.po
++++ b/po/te.po
+@@ -1753,8 +1753,8 @@ msgstr "%u MHz"
+ 
+ #: ../cli/src/devices.c:433
+ #, c-format
+-msgid "%u MB/s"
+-msgstr "%u MB/s"
++msgid "%u Mbit/s"
++msgstr "%u Mbit/s"
+ 
+ #: ../cli/src/devices.c:452
+ msgid "WPA1"
+diff --git a/po/tr.po b/po/tr.po
+index 867c95e..713163b 100644
+--- a/po/tr.po
++++ b/po/tr.po
+@@ -1231,8 +1231,8 @@ msgstr "%u MHz"
+ 
+ #: ../cli/src/devices.c:418
+ #, c-format
+-msgid "%u MB/s"
+-msgstr "%u MB/s"
++msgid "%u Mbit/s"
++msgstr "%u Mbit/s"
+ 
+ #: ../cli/src/devices.c:427
+ msgid "Encrypted: "
+diff --git a/po/uk.po b/po/uk.po
+index 8891829..c92e757 100644
+--- a/po/uk.po
++++ b/po/uk.po
+@@ -1215,7 +1215,7 @@ msgstr "%u МГц"
+ 
+ #: ../cli/src/devices.c:418
+ #, c-format
+-msgid "%u MB/s"
++msgid "%u MBit/s"
+ msgstr "%u МБ/с"
+ 
+ #: ../cli/src/devices.c:427
+diff --git a/po/zh_CN.po b/po/zh_CN.po
+index 5f4b64f..742e084 100644
+--- a/po/zh_CN.po
++++ b/po/zh_CN.po
+@@ -708,8 +708,8 @@ msgstr "%u MHz"
+ 
+ #: ../cli/src/devices.c:394
+ #, c-format
+-msgid "%u MB/s"
+-msgstr "%u MB/s"
++msgid "%u Mbit/s"
++msgstr "%u Mbit/s"
+ 
+ #: ../cli/src/devices.c:403
+ msgid "Encrypted: "
+diff --git a/po/zh_TW.po b/po/zh_TW.po
+index d6e530f..7d5e1fe 100644
+--- a/po/zh_TW.po
++++ b/po/zh_TW.po
+@@ -698,8 +698,8 @@ msgstr "%u MHz"
+ 
+ #: ../cli/src/devices.c:350
+ #, c-format
+-msgid "%u MB/s"
+-msgstr "%u MB/s"
++msgid "%u Mbit/s"
++msgstr "%u Mbit/s"
+ 
+ #: ../cli/src/devices.c:359
+ msgid "Encrypted: "
+-- 
+1.9.0
+

@@ -1,0 +1,272 @@
+From fafbc0388636379414caa3b8cb9de14b9a60c551 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Ji=C5=99=C3=AD=20Klime=C5=A1?= <jklimes@redhat.com>
+Date: Wed, 12 Mar 2014 13:34:13 +0100
+Subject: [PATCH 1/4] nm-online: fix nm-online to report online status
+ correctly (rh #1054364)
+
+This fixes a behaviour change made by 44ac1020daccfeeb1dc88566adda6e5d8bd87aea.
+That commit make nm-online to wait for NM finishing startup instead of waiting
+for a real connection. So for NetworkManager fully initialized, but
+disconnected nm-online would return 0.
+
+$ nmcli -f RUNNING,STATE,STARTUP,CONNECTIVITY gen status
+RUNNING  STATE         STARTUP  CONNECTIVITY
+running  disconnected  started  none
+
+Revert back to the original behaviour of waiting for a connection. And
+introduce a new option '--wait-for-startup' waiting for NetworkManager
+finishing its startup, which is useful in some cases, like
+NetworkManager-wait-online.service.
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1054364
+(cherry picked from commit 20fb078dd6b10c10539f62449ac2a0b36f0e67ce)
+---
+ man/nm-online.1.in |  7 +++++--
+ test/nm-online.c   | 50 ++++++++++++++++++++++++++++++++++++++++++++------
+ 2 files changed, 49 insertions(+), 8 deletions(-)
+
+diff --git a/man/nm-online.1.in b/man/nm-online.1.in
+index 941f006..ddb2b17 100644
+--- a/man/nm-online.1.in
++++ b/man/nm-online.1.in
+@@ -19,9 +19,9 @@
+ .\" with this manual; if not, write to the Free Software Foundation, Inc.,
+ .\" 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.
+ .\"
+-.\" Copyright (C) 2010 Red Hat, Inc.
++.\" Copyright (C) 2010 - 2014 Red Hat, Inc.
+ .\"
+-.TH NM-ONLINE "1" "11 July 2013"
++.TH NM-ONLINE "1" "25 March 2014"
+ 
+ .SH NAME
+ nm-online \- ask NetworkManager whether the network is connected
+@@ -47,6 +47,9 @@ Exit immediately if NetworkManager is not running or connecting.
+ .TP
+ .B \-q, \-\-quiet
+ Don't print anything.
++.TP
++.B \-s, \-\-wait-for-startup
++Wait for NetworkManager finishing its startup instead of establishing a connection.
+ 
+ .SH EXIT STATUS
+ 
+diff --git a/test/nm-online.c b/test/nm-online.c
+index 7df66c2..03737b2 100644
+--- a/test/nm-online.c
++++ b/test/nm-online.c
+@@ -15,6 +15,7 @@
+  * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+  *
+  * Copyright (C) 2006 - 2008 Novell, Inc.
++ * Copyright (C) 2008 - 2014 Red Hat, Inc.
+  *
+  */
+ 
+@@ -42,6 +43,7 @@
+ #include "nm-client.h"
+ 
+ #define PROGRESS_STEPS 15
++#define WAIT_STARTUP_TAG "wait-startup"
+ 
+ typedef struct
+ {
+@@ -56,11 +58,22 @@ client_properties_changed (GObject *object,
+                            gpointer loop)
+ {
+ 	NMClient *client = NM_CLIENT (object);
++	NMState state;
++	gboolean wait_startup = GPOINTER_TO_UINT (g_object_get_data (object, WAIT_STARTUP_TAG));
+ 
+ 	if (!nm_client_get_manager_running (client))
+ 		return;
+-	if (!nm_client_get_startup (client))
+-		g_main_loop_quit (loop);
++
++	if (wait_startup) {
++		if (!nm_client_get_startup (client))
++			g_main_loop_quit (loop);
++	} else {
++		state = nm_client_get_state (client);
++		if (   state == NM_STATE_CONNECTED_LOCAL
++		    || state == NM_STATE_CONNECTED_SITE
++		    || state == NM_STATE_CONNECTED_GLOBAL)
++			g_main_loop_quit (loop);
++	}
+ }
+ 
+ static gboolean
+@@ -94,16 +107,19 @@ main (int argc, char *argv[])
+ 	gint t_secs = -1;
+ 	gboolean exit_no_nm = FALSE;
+ 	gboolean quiet = FALSE;
++	gboolean wait_startup = FALSE;
+ 	Timeout timeout;
+ 	GOptionContext *opt_ctx = NULL;
+ 	gboolean success;
+ 	NMClient *client;
++	NMState state = NM_STATE_UNKNOWN;
+ 	GMainLoop *loop;
+ 
+ 	GOptionEntry options[] = {
+ 		{"timeout", 't', 0, G_OPTION_ARG_INT, &t_secs, N_("Time to wait for a connection, in seconds (without the option, default value is 30)"), "<timeout>"},
+ 		{"exit", 'x', 0, G_OPTION_ARG_NONE, &exit_no_nm, N_("Exit immediately if NetworkManager is not running"), NULL},
+ 		{"quiet", 'q', 0, G_OPTION_ARG_NONE, &quiet, N_("Don't print anything"), NULL},
++		{"wait-for-startup", 's', 0, G_OPTION_ARG_NONE, &wait_startup, N_("Wait for NetworkManager startup instead of a connection"), NULL},
+ 		{NULL}
+ 	};
+ 
+@@ -147,13 +163,35 @@ main (int argc, char *argv[])
+ 
+ 	client = nm_client_new ();
+ 
++	g_object_set_data (G_OBJECT (client), WAIT_STARTUP_TAG, GUINT_TO_POINTER (wait_startup));
++	state = nm_client_get_state (client);
+ 	if (!nm_client_get_manager_running (client)) {
+-		if (exit_no_nm)
++		if (exit_no_nm) {
++			g_object_unref (client);
+ 			return 1;
+-	} else if (!nm_client_get_startup (client))
+-		return 0;
+-	if (!timeout.value)
++		}
++	} else if (wait_startup) {
++		if (!nm_client_get_startup (client)) {
++			g_object_unref (client);
++			return 0;
++		}
++	} else {
++		if (   state == NM_STATE_CONNECTED_LOCAL
++		    || state == NM_STATE_CONNECTED_SITE
++		    || state == NM_STATE_CONNECTED_GLOBAL) {
++			g_object_unref (client);
++			return 0;
++		}
++	}
++	if (exit_no_nm && (state != NM_STATE_CONNECTING)) {
++		g_object_unref (client);
+ 		return 1;
++	}
++
++	if (!timeout.value) {
++		g_object_unref (client);
++		return 1;
++	}
+ 
+ 	timeout.norm = (double) timeout.value / (double) PROGRESS_STEPS;
+ 	g_timeout_add_seconds (1, handle_timeout, &timeout);
+-- 
+1.9.0
+
+
+From f247a3c86e71d7ae419c3401fff310d2e836a2ab Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Ji=C5=99=C3=AD=20Klime=C5=A1?= <jklimes@redhat.com>
+Date: Wed, 26 Mar 2014 18:14:04 +0100
+Subject: [PATCH 2/4] systemd: update NetworkManager-wait-online.service to
+ wait for startup
+
+(cherry picked from commit 520d2814ba720cf8aee9d6f91fca4e3ea0d8555f)
+---
+ data/NetworkManager-wait-online-systemd-pre200.service.in | 2 +-
+ data/NetworkManager-wait-online.service.in                | 2 +-
+ 2 files changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/data/NetworkManager-wait-online-systemd-pre200.service.in b/data/NetworkManager-wait-online-systemd-pre200.service.in
+index fd9be41..d145a79 100644
+--- a/data/NetworkManager-wait-online-systemd-pre200.service.in
++++ b/data/NetworkManager-wait-online-systemd-pre200.service.in
+@@ -7,7 +7,7 @@ Before=network.target
+ 
+ [Service]
+ Type=oneshot
+-ExecStart=@bindir@/nm-online -q --timeout=30
++ExecStart=@bindir@/nm-online -s -q --timeout=30
+ 
+ [Install]
+ WantedBy=network.target
+diff --git a/data/NetworkManager-wait-online.service.in b/data/NetworkManager-wait-online.service.in
+index b81c5b0..6ad6942 100644
+--- a/data/NetworkManager-wait-online.service.in
++++ b/data/NetworkManager-wait-online.service.in
+@@ -7,7 +7,7 @@ Before=network.target network-online.target
+ 
+ [Service]
+ Type=oneshot
+-ExecStart=@bindir@/nm-online -q --timeout=30
++ExecStart=@bindir@/nm-online -s -q --timeout=30
+ 
+ [Install]
+ WantedBy=multi-user.target
+-- 
+1.9.0
+
+
+From 749647f7ab034eb7eb43877fe957cc71a82d9773 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Ji=C5=99=C3=AD=20Klime=C5=A1?= <jklimes@redhat.com>
+Date: Tue, 25 Mar 2014 10:13:08 +0100
+Subject: [PATCH 3/4] trivial: correct nm-online's '--exit' option description
+
+(cherry picked from commit ea962ce4112ccf3b25efe5b9661c1a48090dc4e4)
+---
+ test/nm-online.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/test/nm-online.c b/test/nm-online.c
+index 03737b2..53b0465 100644
+--- a/test/nm-online.c
++++ b/test/nm-online.c
+@@ -117,7 +117,7 @@ main (int argc, char *argv[])
+ 
+ 	GOptionEntry options[] = {
+ 		{"timeout", 't', 0, G_OPTION_ARG_INT, &t_secs, N_("Time to wait for a connection, in seconds (without the option, default value is 30)"), "<timeout>"},
+-		{"exit", 'x', 0, G_OPTION_ARG_NONE, &exit_no_nm, N_("Exit immediately if NetworkManager is not running"), NULL},
++		{"exit", 'x', 0, G_OPTION_ARG_NONE, &exit_no_nm, N_("Exit immediately if NetworkManager is not running or connecting"), NULL},
+ 		{"quiet", 'q', 0, G_OPTION_ARG_NONE, &quiet, N_("Don't print anything"), NULL},
+ 		{"wait-for-startup", 's', 0, G_OPTION_ARG_NONE, &wait_startup, N_("Wait for NetworkManager startup instead of a connection"), NULL},
+ 		{NULL}
+-- 
+1.9.0
+
+
+From f3804ce1e2a0229a6ef32cb1ddb0d750822fb2d8 Mon Sep 17 00:00:00 2001
+From: Thomas Haller <thaller@redhat.com>
+Date: Wed, 12 Mar 2014 14:44:27 +0100
+Subject: [PATCH 4/4] nm-online: fix considering the --quiet option
+
+Signed-off-by: Thomas Haller <thaller@redhat.com>
+(cherry picked from commit 0a85bff70a65d5a205b56bc9f74fc2b0237ad05a)
+---
+ test/nm-online.c | 5 +++--
+ 1 file changed, 3 insertions(+), 2 deletions(-)
+
+diff --git a/test/nm-online.c b/test/nm-online.c
+index 53b0465..681df18 100644
+--- a/test/nm-online.c
++++ b/test/nm-online.c
+@@ -106,7 +106,6 @@ main (int argc, char *argv[])
+ {
+ 	gint t_secs = -1;
+ 	gboolean exit_no_nm = FALSE;
+-	gboolean quiet = FALSE;
+ 	gboolean wait_startup = FALSE;
+ 	Timeout timeout;
+ 	GOptionContext *opt_ctx = NULL;
+@@ -118,11 +117,13 @@ main (int argc, char *argv[])
+ 	GOptionEntry options[] = {
+ 		{"timeout", 't', 0, G_OPTION_ARG_INT, &t_secs, N_("Time to wait for a connection, in seconds (without the option, default value is 30)"), "<timeout>"},
+ 		{"exit", 'x', 0, G_OPTION_ARG_NONE, &exit_no_nm, N_("Exit immediately if NetworkManager is not running or connecting"), NULL},
+-		{"quiet", 'q', 0, G_OPTION_ARG_NONE, &quiet, N_("Don't print anything"), NULL},
++		{"quiet", 'q', 0, G_OPTION_ARG_NONE, &timeout.quiet, N_("Don't print anything"), NULL},
+ 		{"wait-for-startup", 's', 0, G_OPTION_ARG_NONE, &wait_startup, N_("Wait for NetworkManager startup instead of a connection"), NULL},
+ 		{NULL}
+ 	};
+ 
++	timeout.quiet = FALSE;
++
+ 	/* Set locale to be able to use environment variables */
+ 	setlocale (LC_ALL, "");
+ 
+-- 
+1.9.0
+

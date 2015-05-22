@@ -1,0 +1,34 @@
+From 90782cf023c2fc2c223203a97ca2ea56a0c61c55 Mon Sep 17 00:00:00 2001
+From: Dan Williams <dcbw@redhat.com>
+Date: Mon, 6 Jan 2014 17:21:11 -0600
+Subject: [PATCH] platform: ignore errors adding IPv6 point-to-point address
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+For now, ignore them, as libnl does not support IPv6 PtP addresses
+and returns an error.  In the future perhaps we'll want to add a host
+route for the peer instead of using the point-to-point address.
+
+Signed-off-by: Jiří Klimeš <jklimes@redhat.com>
+---
+ src/platform/nm-linux-platform.c | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/src/platform/nm-linux-platform.c b/src/platform/nm-linux-platform.c
+index a633b82..a834333 100644
+--- a/src/platform/nm-linux-platform.c
++++ b/src/platform/nm-linux-platform.c
+@@ -2274,7 +2274,8 @@ build_rtnl_addr (int family,
+ 		auto_nl_addr struct nl_addr *nlpeer = nl_addr_build (family, peer_addr, addrlen);
+ 
+ 		nle = rtnl_addr_set_peer (rtnladdr, nlpeer);
+-		g_assert (!nle);
++		/* IPv6 doesn't support peer addresses yet */
++		g_assert (!nle || (nle == -NLE_AF_NOSUPPORT));
+ 	}
+ 
+ 	rtnl_addr_set_prefixlen (rtnladdr, plen);
+-- 
+1.7.11.7
+

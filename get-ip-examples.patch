@@ -1,0 +1,98 @@
+From 85272df6eb89682a3d13022281085b97527955e1 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Ji=C5=99=C3=AD=20Klime=C5=A1?= <jklimes@redhat.com>
+Date: Wed, 22 Jan 2014 15:40:22 +0100
+Subject: [PATCH] examples: update get_ips.py python example for DNS
+ information
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+
+Signed-off-by: Jiří Klimeš <jklimes@redhat.com>
+---
+ examples/python/gi/get_ips.py | 44 +++++++++++++++++++++++++++++++++++++++----
+ 1 file changed, 40 insertions(+), 4 deletions(-)
+
+diff --git a/examples/python/gi/get_ips.py b/examples/python/gi/get_ips.py
+index b1e59e2..6903b6d 100755
+--- a/examples/python/gi/get_ips.py
++++ b/examples/python/gi/get_ips.py
+@@ -24,8 +24,8 @@ import sys, socket, struct
+ from gi.repository import GLib, NetworkManager, NMClient
+ 
+ #
+-#  This example shows how to get get addresses and routes from NMIP4Config and NMIP6Config
+-#  (got out of NMDevice)
++#  This example shows how to get addresses, routes and DNS information
++#  from NMIP4Config and NMIP6Config (got out of NMDevice)
+ #
+ 
+ def show_addresses(self, family):
+@@ -59,7 +59,6 @@ def show_addresses(self, family):
+                               socket.inet_ntop(family, gateway_struct))
+ 
+ 
+-
+ def show_routes(self, family):
+     if (family == socket.AF_INET):
+        ip_cfg = self.get_ip4_config()
+@@ -70,7 +69,7 @@ def show_routes(self, family):
+         print("None")
+         return
+ 
+-    nm_routes = ip_cfg.get_routes() 
++    nm_routes = ip_cfg.get_routes()
+     if len(nm_routes) == 0:
+         print("None")
+         return
+@@ -93,6 +92,33 @@ def show_routes(self, family):
+                                   metric)
+ 
+ 
++def show_dns(self, family):
++    if (family == socket.AF_INET):
++       ip_cfg = self.get_ip4_config()
++    else:
++       ip_cfg = self.get_ip6_config()
++
++    if ip_cfg is None:
++        print("None")
++        return
++
++    if (family == socket.AF_INET):
++        print ("Domains: %s") % (ip_cfg.get_domains())
++        print ("Searches: %s") % (ip_cfg.get_searches())
++        print("Nameservers:")
++        nameservers = ip_cfg.get_nameservers()
++        for dns in nameservers:
++            print socket.inet_ntop(family, struct.pack("=I", dns))
++    else:
++        print ("Domains: %s") % (ip_cfg.get_domains())
++        print ("Searches: %s") % (ip_cfg.get_searches())
++        print("Nameservers:")
++        num = ip_cfg.get_num_nameservers()
++        for i in range(0,num):
++           dns = ip_cfg.get_nameserver(i)
++           print socket.inet_ntop(family, dns)
++
++
+ if __name__ == "__main__":
+     if len(sys.argv) != 2:
+         sys.exit('Usage: %s <interface>' % sys.argv[0])
+@@ -125,3 +151,13 @@ if __name__ == "__main__":
+     show_routes(dev, socket.AF_INET6)
+     print
+ 
++    print "IPv4 DNS:"
++    print("------------")
++    show_dns(dev, socket.AF_INET)
++    print
++
++    print "IPv6 DNS:"
++    print("------------")
++    show_dns(dev, socket.AF_INET6)
++    print
++
+-- 
+1.7.11.7
+

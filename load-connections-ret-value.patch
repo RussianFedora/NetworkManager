@@ -1,0 +1,34 @@
+From de36db0af15fccf273fa05413219df23e3a07f25 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Ji=C5=99=C3=AD=20Klime=C5=A1?= <jklimes@redhat.com>
+Date: Mon, 18 Nov 2013 09:06:23 +0100
+Subject: [PATCH] libnm-glib: fix return value in
+ nm_remote_settings_load_connections()
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+when g_return_val_if_fail() fails.
+
+Signed-off-by: Jiří Klimeš <jklimes@redhat.com>
+---
+ libnm-glib/nm-remote-settings.c | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/libnm-glib/nm-remote-settings.c b/libnm-glib/nm-remote-settings.c
+index 0226e99..1110295 100644
+--- a/libnm-glib/nm-remote-settings.c
++++ b/libnm-glib/nm-remote-settings.c
+@@ -664,8 +664,8 @@ nm_remote_settings_load_connections (NMRemoteSettings *settings,
+ 	char **my_failures = NULL;
+ 	gboolean ret = FALSE;
+ 
+-	g_return_val_if_fail (NM_IS_REMOTE_SETTINGS (settings), NULL);
+-	g_return_val_if_fail (filenames != NULL, NULL);
++	g_return_val_if_fail (NM_IS_REMOTE_SETTINGS (settings), FALSE);
++	g_return_val_if_fail (filenames != NULL, FALSE);
+ 
+ 	priv = NM_REMOTE_SETTINGS_GET_PRIVATE (settings);
+ 
+-- 
+1.7.11.7
+

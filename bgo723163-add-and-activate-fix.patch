@@ -1,0 +1,50 @@
+From ff350c04c0546383841126ea43bed93d302482fb Mon Sep 17 00:00:00 2001
+From: Dan Winship <danw@gnome.org>
+Date: Tue, 28 Jan 2014 08:39:11 -0500
+Subject: [PATCH] core: fix crash when connecting to new Wi-Fi network (bgo
+ #723163)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+If the user is AddAndActivating a new network, the connection may not
+have an NMSettingConnection yet, but we know that once it does, the
+user will be authorized.
+
+Signed-off-by: Jiří Klimeš <jklimes@redhat.com>
+---
+ src/nm-manager-auth.c | 11 ++++++++---
+ 1 file changed, 8 insertions(+), 3 deletions(-)
+
+diff --git a/src/nm-manager-auth.c b/src/nm-manager-auth.c
+index 7452bc3..7f8b313 100644
+--- a/src/nm-manager-auth.c
++++ b/src/nm-manager-auth.c
+@@ -535,9 +535,6 @@ nm_auth_uid_in_acl (NMConnection *connection,
+ 	if (0 == uid)
+ 		return TRUE;
+ 
+-	s_con = nm_connection_get_setting_connection (connection);
+-	g_assert (s_con);
+-
+ 	/* Reject the request if the request comes from no session at all */
+ 	if (!nm_session_monitor_uid_has_session (smon, uid, &user, &local)) {
+ 		if (out_error_desc) {
+@@ -555,6 +552,14 @@ nm_auth_uid_in_acl (NMConnection *connection,
+ 		return FALSE;
+ 	}
+ 
++	s_con = nm_connection_get_setting_connection (connection);
++	if (!s_con) {
++		/* This can only happen when called from AddAndActivate, so we know
++		 * the user will be authorized when the connection is completed.
++		 */
++		return TRUE;
++	}
++
+ 	/* Match the username returned by the session check to a user in the ACL */
+ 	if (!nm_setting_connection_permissions_user_allowed (s_con, user)) {
+ 		if (out_error_desc)
+-- 
+1.7.11.7
+

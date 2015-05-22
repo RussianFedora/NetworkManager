@@ -1,0 +1,52 @@
+From f6f216f0a96942aaaacea26ffb7af72aab86f38c Mon Sep 17 00:00:00 2001
+From: Giovanni Campagna <gcampagna@src.gnome.org>
+Date: Mon, 17 Feb 2014 15:41:04 +0100
+Subject: [PATCH] manager: fix notification of the connectivity property
+
+Notify DBus clients at the end of a connectivity check, and when
+NMConnectivity reports a change.
+
+https://bugzilla.gnome.org/show_bug.cgi?id=724550
+---
+ src/nm-manager.c | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/src/nm-manager.c b/src/nm-manager.c
+index 8d37f4b..3ae48c8 100644
+--- a/src/nm-manager.c
++++ b/src/nm-manager.c
+@@ -643,14 +643,15 @@ checked_connectivity (GObject *object, GAsyncResult *result, gpointer user_data)
+ 		connectivity = nm_connectivity_check_finish (priv->connectivity, result, NULL);
+ 
+ 		if (connectivity == NM_CONNECTIVITY_FULL)
+ 			set_state (manager, NM_STATE_CONNECTED_GLOBAL);
+ 		else if (   connectivity == NM_CONNECTIVITY_PORTAL
+ 		         || connectivity == NM_CONNECTIVITY_LIMITED)
+ 			set_state (manager, NM_STATE_CONNECTED_SITE);
++		g_object_notify (G_OBJECT (manager), NM_MANAGER_CONNECTIVITY);
+ 	}
+ 
+ 	g_object_unref (manager);
+ }
+ 
+ static void
+ nm_manager_update_state (NMManager *manager)
+@@ -4286,14 +4287,15 @@ connectivity_changed (NMConnectivity *connectivity,
+ 	static const char *connectivity_states[] = { "UNKNOWN", "NONE", "PORTAL", "LIMITED", "FULL" };
+ 
+ 	state = nm_connectivity_get_state (connectivity);
+ 	nm_log_dbg (LOGD_CORE, "connectivity checking indicates %s",
+ 	            connectivity_states[state]);
+ 
+ 	nm_manager_update_state (self);
++	g_object_notify (G_OBJECT (self), NM_MANAGER_CONNECTIVITY);
+ }
+ 
+ static void
+ firmware_dir_changed (GFileMonitor *monitor,
+                       GFile *file,
+                       GFile *other_file,
+                       GFileMonitorEvent event_type,
+-- 
+1.9.3
+

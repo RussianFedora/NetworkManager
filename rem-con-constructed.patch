@@ -1,0 +1,31 @@
+From df4c9347fc85ec2aa7ddc67e0ff39bc1d56f669a Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Ji=C5=99=C3=AD=20Klime=C5=A1?= <jklimes@redhat.com>
+Date: Mon, 27 Jan 2014 17:36:30 +0100
+Subject: [PATCH] libnm-glib: chain up the parent constructed() of
+ NMRemoteConnection
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+
+Signed-off-by: Jiří Klimeš <jklimes@redhat.com>
+---
+ libnm-glib/nm-remote-connection.c | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/libnm-glib/nm-remote-connection.c b/libnm-glib/nm-remote-connection.c
+index 73a2cc8..27baebd 100644
+--- a/libnm-glib/nm-remote-connection.c
++++ b/libnm-glib/nm-remote-connection.c
+@@ -508,6 +508,8 @@ constructed (GObject *object)
+ {
+ 	NMRemoteConnectionPrivate *priv = NM_REMOTE_CONNECTION_GET_PRIVATE (object);
+ 
++	G_OBJECT_CLASS (nm_remote_connection_parent_class)->constructed (object);
++
+ 	g_assert (priv->bus);
+ 	g_assert (nm_connection_get_path (NM_CONNECTION (object)));
+ 
+-- 
+1.7.11.7
+

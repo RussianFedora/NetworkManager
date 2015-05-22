@@ -1,0 +1,44 @@
+From f6151a2d43f60414589910357cb6e4ee7cfa0f9c Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Ji=C5=99=C3=AD=20Klime=C5=A1?= <jklimes@redhat.com>
+Date: Thu, 12 Jun 2014 12:00:33 +0200
+Subject: [PATCH] bluetooth: don't crash on switching off bluetooth
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Reproducer:
+- activate bluetooth on a computer and a phone
+- pair the devices
+- $ nmcli con add type blue con-name myphone bt-type panu addr 00:17:EA:84:E7:41
+- turn off bluetooth on computer (either with a hardware or software switch)
+
+Signed-off-by: Jiří Klimeš <jklimes@redhat.com>
+---
+ src/devices/bluetooth/nm-bluez-device.c | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/src/bluez-manager/nm-bluez-device.c b/src/bluez-manager/nm-bluez-device.c
+index e04e8d4..d81343b 100644
+--- a/src/bluez-manager/nm-bluez-device.c
++++ b/src/bluez-manager/nm-bluez-device.c
+@@ -410,6 +410,8 @@ bluez_disconnect_cb (GDBusConnection *dbus_connection,
+ 		g_error_free (error);
+ 	} else
+ 		g_variant_unref (variant);
++
++	g_object_unref (NM_BLUEZ_DEVICE (user_data));
+ }
+ 
+ void
+@@ -449,7 +451,7 @@ nm_bluez_device_disconnect (NMBluezDevice *self)
+ 	                        10000,
+ 	                        NULL,
+ 	                        (GAsyncReadyCallback) bluez_disconnect_cb,
+-	                        self);
++	                        g_object_ref (self));
+ 
+ 	priv->connection_bt_type = NM_BT_CAPABILITY_NONE;
+ }
+-- 
+1.7.11.7
+

@@ -1,0 +1,209 @@
+From 593f1aadec7536944efe21a1e8941ced4746df86 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Ji=C5=99=C3=AD=20Klime=C5=A1?= <jklimes@redhat.com>
+Date: Thu, 21 Nov 2013 10:31:28 +0100
+Subject: [PATCH 1/2] agents: fix removing requests from hash table while
+ iterating it
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+GLib-CRITICAL **: g_hash_table_iter_next: assertion 'ri->version == ri->hash_table->version' failed
+
+It is not allowed to modify hash table while it is iterated. Unfortunately,
+request_remove_agent() may remove the request from the 'requests' hash table,
+making it not usable in the loop hash table looping.
+
+We need to store the request into a temporary list and call request_next_agent()
+on them later (after the hash loop).
+
+Test case:
+1. start NM and nm-applet
+2. activate a Wi-Fi WPA connection
+3. nm-applet displays a dialog asking for a password
+4. kill nm-applet
+5. NetworkManager removes the nm-applet's secret agent
+   and runs into removing the request from hash table in the
+   iterating loop (via get_complete_cb)
+
+ #0  get_complete_cb (parent=0x7f3f250f2970, secrets=0x0, agent_dbus_owner=0x0, agent_username=0x0, error=0x7f3f250f7830, user_data=0x7f3f25020e10)
+     at settings/nm-agent-manager.c:1111
+ #1  0x00007f3f23b46ea5 in req_complete_error (error=0x7f3f250f7830, req=0x7f3f250f2970) at settings/nm-agent-manager.c:509
+ #2  request_next_agent (req=0x7f3f250f2970) at settings/nm-agent-manager.c:615
+ #3  0x00007f3f23b48596 in request_remove_agent (agent=0x7f3f250f4a20, req=0x7f3f250f2970) at settings/nm-agent-manager.c:631
+ #4  remove_agent (self=<optimized out>, owner=0x7f3f250dbff0 ":1.275") at settings/nm-agent-manager.c:130
+ #5  0x00007f3f23b4868d in impl_agent_manager_unregister (self=0x7f3f25020e10, context=0x7f3f250f5480) at settings/nm-agent-manager.c:374
+
+ #0  0x00007f3f1fb9c4e9 in g_logv (log_domain=0x7f3f1fbfef4e "GLib", log_level=G_LOG_LEVEL_CRITICAL, format=<optimized out>, args=args@entry=0x7fff156b77c0) at gmessages.c:989
+ #1  0x00007f3f1fb9c63f in g_log (log_domain=log_domain@entry=0x7f3f1fbfef4e "GLib", log_level=log_level@entry=G_LOG_LEVEL_CRITICAL,
+     format=format@entry=0x7f3f1fc0889a "%s: assertion '%s' failed") at gmessages.c:1025
+ #2  0x00007f3f1fb9c679 in g_return_if_fail_warning (log_domain=log_domain@entry=0x7f3f1fbfef4e "GLib",
+     pretty_function=pretty_function@entry=0x7f3f1fc03c30 <__PRETTY_FUNCTION__.4571> "g_hash_table_iter_next",
+     expression=expression@entry=0x7f3f1fc038f0 "ri->version == ri->hash_table->version") at gmessages.c:1034
+ #3  0x00007f3f1fb849c0 in g_hash_table_iter_next (iter=<optimized out>, key=<optimized out>, value=<optimized out>) at ghash.c:733
+ #4  0x00007f3f23b484e5 in remove_agent (self=<optimized out>, owner=0x7f3f250dbff0 ":1.275") at settings/nm-agent-manager.c:129
+ #5  0x00007f3f23b4868d in impl_agent_manager_unregister (self=0x7f3f25020e10, context=0x7f3f250f5480) at settings/nm-agent-manager.c:374
+
+Signed-off-by: Jiří Klimeš <jklimes@redhat.com>
+---
+ src/settings/nm-agent-manager.c | 22 ++++++++++++++++------
+ 1 file changed, 16 insertions(+), 6 deletions(-)
+
+diff --git a/src/settings/nm-agent-manager.c b/src/settings/nm-agent-manager.c
+index 89cfd30..8644293 100644
+--- a/src/settings/nm-agent-manager.c
++++ b/src/settings/nm-agent-manager.c
+@@ -15,7 +15,7 @@
+  * with this program; if not, write to the Free Software Foundation, Inc.,
+  * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+  *
+- * Copyright (C) 2010 - 2011 Red Hat, Inc.
++ * Copyright (C) 2010 - 2013 Red Hat, Inc.
+  */
+ 
+ #include <config.h>
+@@ -74,7 +74,9 @@ static void request_add_agent (Request *req,
+                                NMSecretAgent *agent,
+                                NMSessionMonitor *session_monitor);
+ 
+-static void request_remove_agent (Request *req, NMSecretAgent *agent);
++static void request_remove_agent (Request *req, NMSecretAgent *agent, GSList **pending_reqs);
++
++static void request_next_agent (Request *req);
+ 
+ static void impl_agent_manager_register (NMAgentManager *self,
+                                          const char *identifier,
+@@ -113,6 +115,7 @@ remove_agent (NMAgentManager *self, const char *owner)
+ 	NMSecretAgent *agent;
+ 	GHashTableIter iter;
+ 	gpointer data;
++	GSList *pending_reqs = NULL;
+ 
+ 	g_return_val_if_fail (owner != NULL, FALSE);
+ 
+@@ -124,10 +127,17 @@ remove_agent (NMAgentManager *self, const char *owner)
+ 	nm_log_dbg (LOGD_AGENTS, "(%s) agent unregistered or disappeared",
+ 	            nm_secret_agent_get_description (agent));
+ 
+-	/* Remove this agent to any in-progress secrets requests */
++	/* Remove this agent from any in-progress secrets requests */
+ 	g_hash_table_iter_init (&iter, priv->requests);
+ 	while (g_hash_table_iter_next (&iter, NULL, &data))
+-		request_remove_agent ((Request *) data, agent);
++		request_remove_agent ((Request *) data, agent, &pending_reqs);
++
++	/* We cannot call request_next_agent() from from within hash iterating loop,
++	 * because it may remove the request from the hash table, which invalidates
++	 * the iterator. So, only remove the agent from requests. And store the requests
++	 * that should be sent to other agent to a temporary list to proceed afterwards.
++	 */
++	g_slist_free_full (pending_reqs, (GDestroyNotify) request_next_agent);
+ 
+ 	/* And dispose of the agent */
+ 	g_hash_table_remove (priv->agents, owner);
+@@ -619,7 +629,7 @@ request_next_agent (Request *req)
+ }
+ 
+ static void
+-request_remove_agent (Request *req, NMSecretAgent *agent)
++request_remove_agent (Request *req, NMSecretAgent *agent, GSList **pending_reqs)
+ {
+ 	g_return_if_fail (req != NULL);
+ 	g_return_if_fail (agent != NULL);
+@@ -629,7 +639,7 @@ request_remove_agent (Request *req, NMSecretAgent *agent)
+ 	if (agent == req->current) {
+ 		nm_log_dbg (LOGD_AGENTS, "(%s) current agent removed from secrets request %p/%s",
+ 		            nm_secret_agent_get_description (agent), req, req->detail);
+-		request_next_agent (req);
++		*pending_reqs = g_slist_prepend (*pending_reqs, req);
+ 	} else {
+ 		nm_log_dbg (LOGD_AGENTS, "(%s) agent removed from secrets request %p/%s",
+ 		            nm_secret_agent_get_description (agent), req, req->detail);
+-- 
+1.7.11.7
+
+
+From 91a95dd9165023966b4377ad49cd8342eab5d776 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Ji=C5=99=C3=AD=20Klime=C5=A1?= <jklimes@redhat.com>
+Date: Thu, 21 Nov 2013 13:40:04 +0100
+Subject: [PATCH 2/2] agents: fix crash in nm_secret_agent_cancel_secrets()
+ (rh #922855)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+When request for getting secrets is being freed in request_free(),
+cancel_callback is get_cancel_cb(). It uses parent->current as a secret agent
+object. However, this object can be already freed and thus there is a problem
+getting priv in nm_secret_agent_cancel_secrets:
+
+g_return_if_fail (self != NULL);
+priv = NM_SECRET_AGENT_GET_PRIVATE (self);
+(gdb) p self
+$66 = (NMSecretAgent *) 0x7fae9afd42e0
+(gdb) p *self
+$67 = {parent = {g_type_instance = {g_class = 0x0}, ref_count = 0, qdata = 0x0}}
+
+ #0  nm_secret_agent_cancel_secrets (self=0x7fae9afd42e0, call=0x1) at settings/nm-secret-agent.c:325
+ #1  0x00007fae9a774882 in request_free (req=0x7fae9afc48f0) at settings/nm-agent-manager.c:496
+ #2  0x00007fae967b251a in g_hash_table_remove_internal (hash_table=0x7fae9aefdf00, key=0x2, notify=1) at ghash.c:1276
+ #3  0x00007fae9a72b340 in dispose (object=0x7fae9af77200) at nm-activation-request.c:446
+ #4  0x00007fae96cbeee8 in g_object_unref (_object=0x7fae9af77200) at gobject.c:3160
+ #5  0x00007fae9a73d87c in _active_connection_cleanup (user_data=<optimized out>) at nm-manager.c:359
+ #6  0x00007fae967c32a6 in g_main_dispatch (context=0x7fae9aedb180) at gmain.c:3066
+ #7  g_main_context_dispatch (context=context@entry=0x7fae9aedb180) at gmain.c:3642
+ #8  0x00007fae967c3628 in g_main_context_iterate (context=0x7fae9aedb180, block=block@entry=1, dispatch=dispatch@entry=1, self=<optimized out>) at gmain.c:3713
+ #9  0x00007fae967c3a3a in g_main_loop_run (loop=0x7fae9aedb860) at gmain.c:3907
+
+So we need to ref() 'agent' when adding it to pending list, so that the object
+is not freed if the secret agent unregisters and is removed.
+
+Test case:
+1. run NM and nm-applet
+2. activate a Wi-Fi network
+3. nm-applet will ask for a password; ignore the popup window and kill nm-applet
+4. start nm-applet again
+5. click the same Wi-Fi network in nm-applet
+6. NM will experience problems in nm_secret_agent_cancel_secrets() or crashes
+(the procedure may not be 100%, but reproduces most of the time)
+
+https://bugzilla.redhat.com/show_bug.cgi?id=922855
+
+Signed-off-by: Jiří Klimeš <jklimes@redhat.com>
+---
+ src/settings/nm-agent-manager.c | 6 ++++--
+ 1 file changed, 4 insertions(+), 2 deletions(-)
+
+diff --git a/src/settings/nm-agent-manager.c b/src/settings/nm-agent-manager.c
+index 8644293..7fb8aea 100644
+--- a/src/settings/nm-agent-manager.c
++++ b/src/settings/nm-agent-manager.c
+@@ -492,7 +492,7 @@ request_free (Request *req)
+ 
+ 	g_free (req->detail);
+ 	g_free (req->verb);
+-	g_slist_free (req->pending);
++	g_slist_free_full (req->pending, g_object_unref);
+ 	g_slist_free (req->asked);
+ 	memset (req, 0, sizeof (Request));
+ 	g_free (req);
+@@ -582,7 +582,7 @@ request_add_agent (Request *req,
+ 
+ 	/* Add this agent to the list, preferring active sessions */
+ 	req->pending = g_slist_insert_sorted_with_data (req->pending,
+-	                                                agent,
++	                                                g_object_ref (agent),
+ 	                                                (GCompareDataFunc) agent_compare_func,
+ 	                                                session_monitor);
+ }
+@@ -607,6 +607,8 @@ request_next_agent (Request *req)
+ 	if (req->pending) {
+ 		/* Send the request to the next agent */
+ 		req->current_call_id = NULL;
++		if (req->current)
++			g_object_unref (req->current);
+ 		req->current = req->pending->data;
+ 		req->pending = g_slist_remove (req->pending, req->current);
+ 
+-- 
+1.7.11.7
+

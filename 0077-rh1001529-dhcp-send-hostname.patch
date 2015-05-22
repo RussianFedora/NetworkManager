@@ -1,0 +1,336 @@
+From 98bcbd2d2417e965f673220e8ec087a8d3b22ad5 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Ji=C5=99=C3=AD=20Klime=C5=A1?= <jklimes@redhat.com>
+Date: Thu, 5 Dec 2013 12:11:36 +0100
+Subject: [PATCH] libnm-util: don't touch dhcp-send-hostname when setting
+ dhcp-hostname (rh #1001529)
+
+It is better to leave it to user whether he wants to enable sending hostname,
+because he probably disabled it manually (dhcp-send-hostname is TRUE by default).
+Also, this would not work for plugins that read and set dhcp-hostname after
+dhcp-send-hostname.
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1001529
+---
+ libnm-util/nm-setting-ip4-config.c | 3 ---
+ 1 file changed, 3 deletions(-)
+
+diff --git a/libnm-util/nm-setting-ip4-config.c b/libnm-util/nm-setting-ip4-config.c
+index 5fd1cfd..b019a14 100644
+--- a/libnm-util/nm-setting-ip4-config.c
++++ b/libnm-util/nm-setting-ip4-config.c
+@@ -904,17 +904,14 @@ set_property (GObject *object, guint prop_id,
+ 		break;
+ 	case PROP_DHCP_SEND_HOSTNAME:
+ 		priv->dhcp_send_hostname = g_value_get_boolean (value);
+ 		break;
+ 	case PROP_DHCP_HOSTNAME:
+ 		g_free (priv->dhcp_hostname);
+ 		priv->dhcp_hostname = g_value_dup_string (value);
+-		/* FIXME: Is this a good idea? */
+-		if (priv->dhcp_hostname)
+-			priv->dhcp_send_hostname = TRUE;
+ 		break;
+ 	case PROP_NEVER_DEFAULT:
+ 		priv->never_default = g_value_get_boolean (value);
+ 		break;
+ 	case PROP_MAY_FAIL:
+ 		priv->may_fail = g_value_get_boolean (value);
+ 		break;
+-- 
+1.9.3
+
+From 97af7e6ee58d8b419bc93f5d9b789b342c61a727 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Ji=C5=99=C3=AD=20Klime=C5=A1?= <jklimes@redhat.com>
+Date: Thu, 5 Dec 2013 14:27:08 +0100
+Subject: [PATCH] ifcfg-rh: read/write dhcp-send-hostname as DHCP_SEND_HOSTNAME
+ (rh #1001529)
+
+It is an extension compared to initscripts (not in sysconfig.txt). But it is
+necessary for preserving dhcp-send-hostname. Missing DHCP_SEND_HOSTNAME is
+treated as "yes", which matches dhcp-send-hostname default value being TRUE.
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1001529
+---
+ src/settings/plugins/ifcfg-rh/reader.c             |  8 ++-
+ .../ifcfg-rh/tests/network-scripts/Makefile.am     |  1 +
+ .../ifcfg-test-wired-dhcp-send-hostname            | 12 ++++
+ .../plugins/ifcfg-rh/tests/test-ifcfg-rh.c         | 70 ++++++++++++++++++++++
+ src/settings/plugins/ifcfg-rh/writer.c             |  9 ++-
+ 5 files changed, 97 insertions(+), 3 deletions(-)
+ create mode 100644 src/settings/plugins/ifcfg-rh/tests/network-scripts/ifcfg-test-wired-dhcp-send-hostname
+
+diff --git a/src/settings/plugins/ifcfg-rh/reader.c b/src/settings/plugins/ifcfg-rh/reader.c
+index e2cff0b..2c808cf 100644
+--- a/src/settings/plugins/ifcfg-rh/reader.c
++++ b/src/settings/plugins/ifcfg-rh/reader.c
+@@ -11,15 +11,15 @@
+  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+  * GNU General Public License for more details.
+  *
+  * You should have received a copy of the GNU General Public License along
+  * with this program; if not, write to the Free Software Foundation, Inc.,
+  * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+  *
+- * Copyright (C) 2008 - 2012 Red Hat, Inc.
++ * Copyright (C) 2008 - 2013 Red Hat, Inc.
+  */
+ 
+ #include <config.h>
+ #include <stdlib.h>
+ #include <string.h>
+ #include <sys/types.h>
+ #include <sys/socket.h>
+@@ -1361,15 +1361,19 @@ make_ip4_setting (shvarFile *ifcfg,
+ 			if (!nm_setting_ip4_config_add_address (s_ip4, addr))
+ 				PLUGIN_WARN (IFCFG_PLUGIN_NAME, "    warning: duplicate IP4 address");
+ 			nm_ip4_address_unref (addr);
+ 		}
+ 	} else if (!strcmp (method, NM_SETTING_IP4_CONFIG_METHOD_AUTO)) {
+ 		value = svGetValue (ifcfg, "DHCP_HOSTNAME", FALSE);
+ 		if (value && strlen (value))
+-			g_object_set (s_ip4, NM_SETTING_IP4_CONFIG_DHCP_HOSTNAME, value, NULL);
++			g_object_set (s_ip4,
++			              NM_SETTING_IP4_CONFIG_DHCP_HOSTNAME, value,
++			              NM_SETTING_IP4_CONFIG_DHCP_SEND_HOSTNAME,
++			                  svTrueValue (ifcfg, "DHCP_SEND_HOSTNAME", TRUE),
++			              NULL);
+ 		g_free (value);
+ 
+ 		value = svGetValue (ifcfg, "DHCP_CLIENT_ID", FALSE);
+ 		if (value && strlen (value))
+ 			g_object_set (s_ip4, NM_SETTING_IP4_CONFIG_DHCP_CLIENT_ID, value, NULL);
+ 		g_free (value);
+ 	}
+diff --git a/src/settings/plugins/ifcfg-rh/tests/network-scripts/Makefile.am b/src/settings/plugins/ifcfg-rh/tests/network-scripts/Makefile.am
+index a7d009e..113c5ca 100644
+--- a/src/settings/plugins/ifcfg-rh/tests/network-scripts/Makefile.am
++++ b/src/settings/plugins/ifcfg-rh/tests/network-scripts/Makefile.am
+@@ -4,14 +4,15 @@ EXTRA_DIST = \
+ EXTRA_DIST = \
+ 	ifcfg-test-minimal \
+ 	ifcfg-test-variables-corner-cases-1 \
+ 	ifcfg-test-nm-controlled \
+ 	ifcfg-test-wired-static \
+ 	ifcfg-test-wired-static-bootproto \
+ 	ifcfg-test-wired-dhcp \
++	ifcfg-test-wired-dhcp-send-hostname \
+ 	ifcfg-test-wired-dhcp6-only \
+ 	ifcfg-test-wired-global-gateway \
+ 	network-test-wired-global-gateway \
+ 	ifcfg-test-wired-never-default \
+ 	network-test-wired-never-default \
+ 	ifcfg-test-wired-defroute-no \
+ 	ifcfg-test-wired-defroute-no-gatewaydev-yes \
+diff --git a/src/settings/plugins/ifcfg-rh/tests/network-scripts/ifcfg-test-wired-dhcp-send-hostname b/src/settings/plugins/ifcfg-rh/tests/network-scripts/ifcfg-test-wired-dhcp-send-hostname
+new file mode 100644
+index 0000000..cba380d
+--- /dev/null
++++ b/src/settings/plugins/ifcfg-rh/tests/network-scripts/ifcfg-test-wired-dhcp-send-hostname
+@@ -0,0 +1,12 @@
++# Intel Corporation 82540EP Gigabit Ethernet Controller (Mobile)
++TYPE=Ethernet
++DEVICE=eth0
++HWADDR=00:11:22:33:44:ee
++BOOTPROTO=dhcp
++ONBOOT=yes
++IPV6INIT=yes
++IPV6_AUTOCONF=yes
++USERCTL=yes
++NM_CONTROLLED=yes
++PEERDNS=no
++DHCP_HOSTNAME="svata-pulec"
+diff --git a/src/settings/plugins/ifcfg-rh/tests/test-ifcfg-rh.c b/src/settings/plugins/ifcfg-rh/tests/test-ifcfg-rh.c
+index 14c4fb9..771cf17 100644
+--- a/src/settings/plugins/ifcfg-rh/tests/test-ifcfg-rh.c
++++ b/src/settings/plugins/ifcfg-rh/tests/test-ifcfg-rh.c
+@@ -6558,14 +6558,80 @@ test_write_wired_dhcp_plus_ip (void)
+ 	g_free (routefile);
+ 	g_free (route6file);
+ 	g_object_unref (connection);
+ 	g_object_unref (reread);
+ }
+ 
+ static void
++test_read_write_wired_dhcp_send_hostname (void)
++{
++	NMConnection *connection, *reread;
++	NMSettingIP4Config *s_ip4;
++	NMSettingIP6Config *s_ip6;
++	const char * dhcp_hostname = "kamil-patka";
++	char *written = NULL;
++	GError *error = NULL;
++	gboolean success = FALSE;
++
++	connection = connection_from_file (TEST_IFCFG_DIR"/network-scripts/ifcfg-test-wired-dhcp-send-hostname",
++	                                   NULL, TYPE_ETHERNET, NULL, NULL,
++	                                   NULL, NULL, NULL, &error, NULL);
++	g_assert_no_error (error);
++	g_assert (connection != NULL);
++
++	/* Check dhcp-hostname and dhcp-send-hostname */
++	s_ip4 = nm_connection_get_setting_ip4_config (connection);
++	s_ip6 = nm_connection_get_setting_ip6_config (connection);
++	g_assert (s_ip4);
++	g_assert (s_ip6);
++	g_assert (nm_setting_ip4_config_get_dhcp_send_hostname (s_ip4) == TRUE);
++	g_assert_cmpstr (nm_setting_ip4_config_get_dhcp_hostname (s_ip4), ==, "svata-pulec");
++	g_assert_cmpstr (nm_setting_ip6_config_get_dhcp_hostname (s_ip6), ==, "svata-pulec");
++
++	/* Set dhcp-send-hostname=false dhcp-hostname="kamil-patka" and write the connection. */
++	g_object_set (s_ip4, NM_SETTING_IP4_CONFIG_DHCP_SEND_HOSTNAME, FALSE, NULL);
++	g_object_set (s_ip4, NM_SETTING_IP4_CONFIG_DHCP_HOSTNAME, dhcp_hostname, NULL);
++	g_object_set (s_ip6, NM_SETTING_IP4_CONFIG_DHCP_HOSTNAME, dhcp_hostname, NULL);
++
++	success = writer_new_connection (connection,
++	                                 TEST_SCRATCH_DIR "/network-scripts/",
++	                                 &written,
++	                                 &error);
++	g_assert (success);
++
++	/* re-read the connection for comparison */
++	reread = connection_from_file (written, NULL, TYPE_ETHERNET, NULL, NULL,
++	                               NULL, NULL, NULL, &error, NULL);
++	unlink (written);
++	g_free (written);
++
++	g_assert_no_error (error);
++	g_assert (reread != NULL);
++
++	success = nm_connection_verify (reread, &error);
++	g_assert_no_error (error);
++	g_assert (success);
++
++	success = nm_connection_compare (connection, reread, NM_SETTING_COMPARE_FLAG_EXACT);
++	g_assert (success);
++
++	/* Check dhcp-hostname and dhcp-send-hostname from the re-read connection. */
++	s_ip4 = nm_connection_get_setting_ip4_config (reread);
++	s_ip6 = nm_connection_get_setting_ip6_config (reread);
++	g_assert (s_ip4);
++	g_assert (s_ip6);
++	g_assert (nm_setting_ip4_config_get_dhcp_send_hostname (s_ip4) == FALSE);
++	g_assert_cmpstr (nm_setting_ip4_config_get_dhcp_hostname (s_ip4), ==, dhcp_hostname);
++	g_assert_cmpstr (nm_setting_ip6_config_get_dhcp_hostname (s_ip6), ==, dhcp_hostname);
++
++	g_object_unref (connection);
++	g_object_unref (reread);
++}
++
++static void
+ test_write_wired_static_ip6_only (void)
+ {
+ 	NMConnection *connection;
+ 	NMConnection *reread;
+ 	NMSettingConnection *s_con;
+ 	NMSettingWired *s_wired;
+ 	NMSettingIP4Config *s_ip4;
+@@ -13211,14 +13280,15 @@ int main (int argc, char **argv)
+ 	g_test_add_data_func (TPATH "static-ip6-only-gw/::", "::", test_write_wired_static_ip6_only_gw);
+ 	g_test_add_data_func (TPATH "static-ip6-only-gw/2001:db8:8:4::2", "2001:db8:8:4::2", test_write_wired_static_ip6_only_gw);
+ 	g_test_add_data_func (TPATH "static-ip6-only-gw/ffff:ffff:ffff:ffff:ffff:ffff:255.255.255.255", "ffff:ffff:ffff:ffff:ffff:ffff:255.255.255.255", test_write_wired_static_ip6_only_gw);
+ 
+ 	test_read_wired_static (TEST_IFCFG_WIRED_STATIC, "System test-wired-static", TRUE);
+ 	test_read_wired_static (TEST_IFCFG_WIRED_STATIC_BOOTPROTO, "System test-wired-static-bootproto", FALSE);
+ 	test_read_wired_dhcp ();
++	g_test_add_func (TPATH "dhcp-send-hostname", test_read_write_wired_dhcp_send_hostname);
+ 	test_read_wired_global_gateway ();
+ 	test_read_wired_never_default ();
+ 	test_read_wired_defroute_no ();
+ 	test_read_wired_defroute_no_gatewaydev_yes ();
+ 	test_read_wired_static_routes ();
+ 	test_read_wired_static_routes_legacy ();
+ 	test_read_wired_ipv4_manual (TEST_IFCFG_WIRED_IPV4_MANUAL_1, "System test-wired-ipv4-manual-1");
+diff --git a/src/settings/plugins/ifcfg-rh/writer.c b/src/settings/plugins/ifcfg-rh/writer.c
+index 6f302b4..604d492 100644
+--- a/src/settings/plugins/ifcfg-rh/writer.c
++++ b/src/settings/plugins/ifcfg-rh/writer.c
+@@ -11,15 +11,15 @@
+  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+  * GNU General Public License for more details.
+  *
+  * You should have received a copy of the GNU General Public License along
+  * with this program; if not, write to the Free Software Foundation, Inc.,
+  * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+  *
+- * Copyright (C) 2009 - 2012 Red Hat, Inc.
++ * Copyright (C) 2009 - 2013 Red Hat, Inc.
+  */
+ 
+ #include <string.h>
+ #include <sys/types.h>
+ #include <sys/socket.h>
+ #include <arpa/inet.h>
+ #include <errno.h>
+@@ -1967,14 +1967,21 @@ write_ip4_setting (NMConnection *connection, shvarFile *ifcfg, GError **error)
+ 		            nm_setting_ip4_config_get_ignore_auto_routes (s_ip4) ? "no" : "yes",
+ 		            FALSE);
+ 
+ 		value = nm_setting_ip4_config_get_dhcp_hostname (s_ip4);
+ 		if (value)
+ 			svSetValue (ifcfg, "DHCP_HOSTNAME", value, FALSE);
+ 
++		/* Missing DHCP_SEND_HOSTNAME means TRUE, and we prefer not write it explicitly
++		 * in that case, because it is NM-specific variable
++		 */
++		svSetValue (ifcfg, "DHCP_SEND_HOSTNAME",
++		            nm_setting_ip4_config_get_dhcp_send_hostname (s_ip4) ? NULL : "no",
++		            FALSE);
++
+ 		value = nm_setting_ip4_config_get_dhcp_client_id (s_ip4);
+ 		if (value)
+ 			svSetValue (ifcfg, "DHCP_CLIENT_ID", value, FALSE);
+ 	}
+ 
+ 	svSetValue (ifcfg, "IPV4_FAILURE_FATAL",
+ 	            nm_setting_ip4_config_get_may_fail (s_ip4) ? "no" : "yes",
+-- 
+1.9.3
+
+From 0b3fdd073e8665f04f480cda50df7b11955bfd80 Mon Sep 17 00:00:00 2001
+From: Dan Williams <dcbw@redhat.com>
+Date: Mon, 6 Jan 2014 16:20:48 -0600
+Subject: [PATCH] ifcfg-rh: fix handling of DHCP_SEND_HOSTNAME when no hostname
+ is given
+
+Move DHCP_SEND_HOSTNAME parsing out of the check for DHCP_HOSTNAME so that
+users can disable NM sending the system hostname to the DHCP server when
+DHCP_HOSTNAME is not defined.
+---
+ src/settings/plugins/ifcfg-rh/reader.c | 11 ++++++-----
+ 1 file changed, 6 insertions(+), 5 deletions(-)
+
+diff --git a/src/settings/plugins/ifcfg-rh/reader.c b/src/settings/plugins/ifcfg-rh/reader.c
+index 2c808cf..1650b84 100644
+--- a/src/settings/plugins/ifcfg-rh/reader.c
++++ b/src/settings/plugins/ifcfg-rh/reader.c
+@@ -1361,21 +1361,22 @@ make_ip4_setting (shvarFile *ifcfg,
+ 			if (!nm_setting_ip4_config_add_address (s_ip4, addr))
+ 				PLUGIN_WARN (IFCFG_PLUGIN_NAME, "    warning: duplicate IP4 address");
+ 			nm_ip4_address_unref (addr);
+ 		}
+ 	} else if (!strcmp (method, NM_SETTING_IP4_CONFIG_METHOD_AUTO)) {
+ 		value = svGetValue (ifcfg, "DHCP_HOSTNAME", FALSE);
+ 		if (value && strlen (value))
+-			g_object_set (s_ip4,
+-			              NM_SETTING_IP4_CONFIG_DHCP_HOSTNAME, value,
+-			              NM_SETTING_IP4_CONFIG_DHCP_SEND_HOSTNAME,
+-			                  svTrueValue (ifcfg, "DHCP_SEND_HOSTNAME", TRUE),
+-			              NULL);
++			g_object_set (s_ip4, NM_SETTING_IP4_CONFIG_DHCP_HOSTNAME, value, NULL);
+ 		g_free (value);
+ 
++		g_object_set (s_ip4,
++		              NM_SETTING_IP4_CONFIG_DHCP_SEND_HOSTNAME,
++		              svTrueValue (ifcfg, "DHCP_SEND_HOSTNAME", TRUE),
++		              NULL);
++
+ 		value = svGetValue (ifcfg, "DHCP_CLIENT_ID", FALSE);
+ 		if (value && strlen (value))
+ 			g_object_set (s_ip4, NM_SETTING_IP4_CONFIG_DHCP_CLIENT_ID, value, NULL);
+ 		g_free (value);
+ 	}
+ 
+ 	/* DNS servers
+-- 
+1.9.3
+

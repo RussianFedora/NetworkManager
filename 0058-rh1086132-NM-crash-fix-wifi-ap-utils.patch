@@ -1,0 +1,32 @@
+This patch fixes rh #1086132. It is an extracted part of bigger upstream patch 97935382.
+
+diff -up NetworkManager-0.9.9.0/src/nm-wifi-ap-utils.c NetworkManager-0.9.9.0/src/nm-wifi-ap-utils.c.foo
+--- NetworkManager-0.9.9.0/src/nm-wifi-ap-utils.c	2013-10-01 20:43:57.000000000 +0200
++++ NetworkManager-0.9.9.0/src/nm-wifi-ap-utils.c.foo	2014-04-10 10:33:52.556199775 +0200
+@@ -302,7 +302,7 @@ verify_wpa_psk (NMSettingWirelessSecurit
+ 			/* Ad-Hoc WPA requires 'wpa' proto, 'none' pairwise, and 'tkip' group */
+ 			n = nm_setting_wireless_security_get_num_protos (s_wsec);
+ 			tmp = (n > 0) ? nm_setting_wireless_security_get_proto (s_wsec, 0) : NULL;
+-			if (n > 1 || strcmp (tmp, "wpa")) {
++			if (n > 1 || g_strcmp0 (tmp, "wpa")) {
+ 				g_set_error_literal (error,
+ 				                     NM_SETTING_WIRELESS_SECURITY_ERROR,
+ 				                     NM_SETTING_WIRELESS_SECURITY_ERROR_INVALID_PROPERTY,
+@@ -312,7 +312,7 @@ verify_wpa_psk (NMSettingWirelessSecurit
+ 
+ 			n = nm_setting_wireless_security_get_num_pairwise (s_wsec);
+ 			tmp = (n > 0) ? nm_setting_wireless_security_get_pairwise (s_wsec, 0) : NULL;
+-			if (n > 1 || strcmp (tmp, "none")) {
++			if (n > 1 || g_strcmp0 (tmp, "none")) {
+ 				g_set_error_literal (error,
+ 				                     NM_SETTING_WIRELESS_SECURITY_ERROR,
+ 				                     NM_SETTING_WIRELESS_SECURITY_ERROR_INVALID_PROPERTY,
+@@ -322,7 +322,7 @@ verify_wpa_psk (NMSettingWirelessSecurit
+ 
+ 			n = nm_setting_wireless_security_get_num_groups (s_wsec);
+ 			tmp = (n > 0) ? nm_setting_wireless_security_get_group (s_wsec, 0) : NULL;
+-			if (n > 1 || strcmp (tmp, "tkip")) {
++			if (n > 1 || g_strcmp0 (tmp, "tkip")) {
+ 				g_set_error_literal (error,
+ 				                     NM_SETTING_WIRELESS_SECURITY_ERROR,
+ 				                     NM_SETTING_WIRELESS_SECURITY_ERROR_INVALID_PROPERTY,

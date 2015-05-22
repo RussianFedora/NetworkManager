@@ -1,0 +1,3981 @@
+From 4404679c7cb6911a634c38e0abcd7dc5de7cfcfe Mon Sep 17 00:00:00 2001
+From: Dan Williams <dcbw@redhat.com>
+Date: Thu, 14 Nov 2013 10:55:46 -0600
+Subject: [PATCH 01/16] settings: simplify connection signal handling
+
+No need to store the ID since we can use g_signal_handlers_disconnect_by_func()
+
+(cherry picked from commit 7a256b9a05c3d872646912f811034861781cffc9)
+---
+ src/settings/nm-settings.c | 89 ++++++++++++++++++----------------------------
+ 1 file changed, 34 insertions(+), 55 deletions(-)
+
+diff --git a/src/settings/nm-settings.c b/src/settings/nm-settings.c
+index 4f99edd..43101f8 100644
+--- a/src/settings/nm-settings.c
++++ b/src/settings/nm-settings.c
+@@ -666,46 +666,6 @@ load_plugins (NMSettings *self, const char **plugins, GError **error)
+ 	return success;
+ }
+ 
+-#define REMOVED_ID_TAG "removed-id-tag"
+-#define UPDATED_ID_TAG "updated-id-tag"
+-#define VISIBLE_ID_TAG "visible-id-tag"
+-
+-static void
+-connection_removed (NMSettingsConnection *obj, gpointer user_data)
+-{
+-	GObject *connection = G_OBJECT (obj);
+-	guint id;
+-
+-	g_object_ref (connection);
+-
+-	/* Disconnect signal handlers, as plugins might still keep references
+-	 * to the connection (and thus the signal handlers would still be live)
+-	 * even after NMSettings has dropped all its references.
+-	 */
+-
+-	id = GPOINTER_TO_UINT (g_object_get_data (connection, REMOVED_ID_TAG));
+-	if (id)
+-		g_signal_handler_disconnect (connection, id);
+-
+-	id = GPOINTER_TO_UINT (g_object_get_data (connection, UPDATED_ID_TAG));
+-	if (id)
+-		g_signal_handler_disconnect (connection, id);
+-
+-	id = GPOINTER_TO_UINT (g_object_get_data (connection, VISIBLE_ID_TAG));
+-	if (id)
+-		g_signal_handler_disconnect (connection, id);
+-
+-	/* Forget about the connection internally */
+-	g_hash_table_remove (NM_SETTINGS_GET_PRIVATE (user_data)->connections,
+-	                     (gpointer) nm_connection_get_path (NM_CONNECTION (connection)));
+-
+-	/* Re-emit for listeners like NMPolicy */
+-	g_signal_emit (NM_SETTINGS (user_data), signals[CONNECTION_REMOVED], 0, connection);
+-	g_signal_emit_by_name (NM_SETTINGS (user_data), NM_CP_SIGNAL_CONNECTION_REMOVED, connection);
+-
+-	g_object_unref (connection);
+-}
+-
+ static void
+ connection_updated (NMSettingsConnection *connection, gpointer user_data)
+ {
+@@ -730,6 +690,33 @@ connection_visibility_changed (NMSettingsConnection *connection,
+ }
+ 
+ static void
++connection_removed (NMSettingsConnection *connection, gpointer user_data)
++{
++	NMSettings *self = NM_SETTINGS (user_data);
++
++	g_object_ref (connection);
++
++	/* Disconnect signal handlers, as plugins might still keep references
++	 * to the connection (and thus the signal handlers would still be live)
++	 * even after NMSettings has dropped all its references.
++	 */
++
++	g_signal_handlers_disconnect_by_func (connection, G_CALLBACK (connection_removed), self);
++	g_signal_handlers_disconnect_by_func (connection, G_CALLBACK (connection_updated), self);
++	g_signal_handlers_disconnect_by_func (connection, G_CALLBACK (connection_visibility_changed), self);
++
++	/* Forget about the connection internally */
++	g_hash_table_remove (NM_SETTINGS_GET_PRIVATE (user_data)->connections,
++	                     (gpointer) nm_connection_get_path (NM_CONNECTION (connection)));
++
++	/* Re-emit for listeners like NMPolicy */
++	g_signal_emit (self, signals[CONNECTION_REMOVED], 0, connection);
++	g_signal_emit_by_name (self, NM_CP_SIGNAL_CONNECTION_REMOVED, connection);
++
++	g_object_unref (connection);
++}
++
++static void
+ secret_agent_registered (NMAgentManager *agent_mgr,
+                          NMSecretAgent *agent,
+                          gpointer user_data)
+@@ -792,7 +779,6 @@ claim_connection (NMSettings *self,
+ 	GHashTableIter iter;
+ 	gpointer data;
+ 	char *path;
+-	guint id;
+ 
+ 	g_return_if_fail (NM_IS_SETTINGS_CONNECTION (connection));
+ 	g_return_if_fail (nm_connection_get_path (NM_CONNECTION (connection)) == NULL);
+@@ -824,20 +810,13 @@ claim_connection (NMSettings *self,
+ 	/* Evil openconnect migration hack */
+ 	openconnect_migrate_hack (NM_CONNECTION (connection));
+ 
+-	id = g_signal_connect (connection, NM_SETTINGS_CONNECTION_REMOVED,
+-	                       G_CALLBACK (connection_removed),
+-	                       self);
+-	g_object_set_data (G_OBJECT (connection), REMOVED_ID_TAG, GUINT_TO_POINTER (id));
+-
+-	id = g_signal_connect (connection, NM_SETTINGS_CONNECTION_UPDATED,
+-	                       G_CALLBACK (connection_updated),
+-	                       self);
+-	g_object_set_data (G_OBJECT (connection), UPDATED_ID_TAG, GUINT_TO_POINTER (id));
+-
+-	id = g_signal_connect (connection, "notify::" NM_SETTINGS_CONNECTION_VISIBLE,
+-	                       G_CALLBACK (connection_visibility_changed),
+-	                       self);
+-	g_object_set_data (G_OBJECT (connection), VISIBLE_ID_TAG, GUINT_TO_POINTER (id));
++	g_signal_connect (connection, NM_SETTINGS_CONNECTION_REMOVED,
++	                  G_CALLBACK (connection_removed), self);
++	g_signal_connect (connection, NM_SETTINGS_CONNECTION_UPDATED,
++	                  G_CALLBACK (connection_updated), self);
++	g_signal_connect (connection, "notify::" NM_SETTINGS_CONNECTION_VISIBLE,
++	                  G_CALLBACK (connection_visibility_changed),
++	                  self);
+ 
+ 	/* Export the connection over D-Bus */
+ 	g_warn_if_fail (nm_connection_get_path (NM_CONNECTION (connection)) == NULL);
+-- 
+1.8.5.3
+
+
+From 991488324b185205b9e8a7855a3c68a68c1a94be Mon Sep 17 00:00:00 2001
+From: Dan Williams <dcbw@redhat.com>
+Date: Wed, 8 Jan 2014 11:39:22 -0600
+Subject: [PATCH 02/16] cli: handle hidden-SSID access points correctly
+
+(cherry picked from commit b69e7c451e60ca32de4febbbd337ad8cc78d3dd2)
+---
+ cli/src/devices.c | 28 +++++++++++++++++-----------
+ 1 file changed, 17 insertions(+), 11 deletions(-)
+
+diff --git a/cli/src/devices.c b/cli/src/devices.c
+index c256bc8..bcbf287 100644
+--- a/cli/src/devices.c
++++ b/cli/src/devices.c
+@@ -398,8 +398,8 @@ fill_output_access_point (gpointer data, gpointer user_data)
+ 	const GByteArray *ssid;
+ 	const char *bssid;
+ 	NM80211Mode mode;
+-	char *channel_str, *freq_str, *ssid_str, *ssid_hex_str, *bitrate_str,
+-	     *strength_str, *wpa_flags_str, *rsn_flags_str;
++	char *channel_str, *freq_str, *ssid_str = NULL, *ssid_hex_str = NULL,
++	     *bitrate_str, *strength_str, *wpa_flags_str, *rsn_flags_str;
+ 	GString *security_str;
+ 	char *ap_name;
+ 	const char *sig_level_0 = "____";
+@@ -427,8 +427,10 @@ fill_output_access_point (gpointer data, gpointer user_data)
+ 	strength = CLAMP (nm_access_point_get_strength (ap), 0, 100);
+ 
+ 	/* Convert to strings */
+-	ssid_str = nm_utils_ssid_to_utf8 (ssid);
+-	ssid_hex_str = ssid_to_hex ((const char *)ssid->data, ssid->len);
++	if (ssid) {
++		ssid_str = nm_utils_ssid_to_utf8 (ssid);
++		ssid_hex_str = ssid_to_hex ((const char *) ssid->data, ssid->len);
++	}
+ 	channel_str = g_strdup_printf ("%u", nm_utils_wifi_freq_to_channel (freq));
+ 	freq_str = g_strdup_printf (_("%u MHz"), freq);
+ 	bitrate_str = g_strdup_printf (_("%u MB/s"), bitrate/1000);
+@@ -1667,16 +1669,20 @@ find_ap_on_device (NMDevice *device, GByteArray *bssid, const char *ssid)
+ 
+ 		if (ssid) {
+ 			/* Parameter is SSID */
+-			const GByteArray *candidate_ssid = nm_access_point_get_ssid (candidate_ap);
+-			char *ssid_tmp = nm_utils_ssid_to_utf8 (candidate_ssid);
++			const GByteArray *candidate_ssid;
+ 
+-			/* Compare SSIDs */
+-			if (strcmp (ssid, ssid_tmp) == 0) {
+-				ap = candidate_ap;
++			candidate_ssid = nm_access_point_get_ssid (candidate_ap);
++			if (candidate_ssid) {
++				char *ssid_tmp = nm_utils_ssid_to_utf8 (candidate_ssid);
++
++				/* Compare SSIDs */
++				if (strcmp (ssid, ssid_tmp) == 0) {
++					ap = candidate_ap;
++					g_free (ssid_tmp);
++					break;
++				}
+ 				g_free (ssid_tmp);
+-				break;
+ 			}
+-			g_free (ssid_tmp);
+ 		} else if (bssid) {
+ 			/* Parameter is BSSID */
+ 			const char *candidate_bssid = nm_access_point_get_bssid (candidate_ap);
+-- 
+1.8.5.3
+
+
+From 2ddaed123b765950c1dbff08f9490a64555de769 Mon Sep 17 00:00:00 2001
+From: Dan Williams <dcbw@redhat.com>
+Date: Wed, 8 Jan 2014 12:18:33 -0600
+Subject: [PATCH 03/16] api/core: add Devices property to the Manager
+
+(cherry picked from commit a59ccc4cbb7e548c42aea9635d263fa3b93836dc)
+---
+ introspection/nm-manager.xml |  6 ++++++
+ src/nm-manager.c             | 29 +++++++++++++++++++++++++----
+ src/nm-manager.h             |  1 +
+ 3 files changed, 32 insertions(+), 4 deletions(-)
+
+diff --git a/introspection/nm-manager.xml b/introspection/nm-manager.xml
+index a3d6647..bc473bc 100644
+--- a/introspection/nm-manager.xml
++++ b/introspection/nm-manager.xml
+@@ -266,6 +266,12 @@
+       <arg name="state" type="u" direction="out" tp:type="NM_STATE"/>
+     </method>
+ 
++    <property name="Devices" type="ao" access="read">
++      <tp:docstring>
++        The list of network devices/interfaces NetworkManager knows about.
++      </tp:docstring>
++    </property>
++
+     <property name="NetworkingEnabled" type="b" access="read">
+       <tp:docstring>
+         Indicates if overall networking is currently enabled or not.  See the
+diff --git a/src/nm-manager.c b/src/nm-manager.c
+index f04e9cb..84fb81f 100644
+--- a/src/nm-manager.c
++++ b/src/nm-manager.c
+@@ -303,6 +303,7 @@ enum {
+ 	PROP_CONNECTIVITY,
+ 	PROP_PRIMARY_CONNECTION,
+ 	PROP_ACTIVATING_CONNECTION,
++	PROP_DEVICES,
+ 
+ 	/* Not exported */
+ 	PROP_HOSTNAME,
+@@ -752,6 +753,7 @@ remove_device (NMManager *manager, NMDevice *device, gboolean quitting)
+ 
+ 	nm_settings_device_removed (priv->settings, device);
+ 	g_signal_emit (manager, signals[DEVICE_REMOVED], 0, device);
++	g_object_notify (G_OBJECT (manager), NM_MANAGER_DEVICES);
+ 	g_object_unref (device);
+ 
+ 	priv->devices = g_slist_remove (priv->devices, device);
+@@ -2156,6 +2158,7 @@ add_device (NMManager *self, NMDevice *device)
+ 
+ 	nm_settings_device_added (priv->settings, device);
+ 	g_signal_emit (self, signals[DEVICE_ADDED], 0, device);
++	g_object_notify (G_OBJECT (self), NM_MANAGER_DEVICES);
+ 
+ 	/* New devices might be master interfaces for virtual interfaces; so we may
+ 	 * need to create new virtual interfaces now.
+@@ -4727,7 +4730,7 @@ get_property (GObject *object, guint prop_id,
+ 	NMManager *self = NM_MANAGER (object);
+ 	NMManagerPrivate *priv = NM_MANAGER_GET_PRIVATE (self);
+ 	GSList *iter;
+-	GPtrArray *active;
++	GPtrArray *array;
+ 	const char *path;
+ 
+ 	switch (prop_id) {
+@@ -4763,12 +4766,13 @@ get_property (GObject *object, guint prop_id,
+ 		g_value_set_boolean (value, priv->radio_states[RFKILL_TYPE_WIMAX].hw_enabled);
+ 		break;
+ 	case PROP_ACTIVE_CONNECTIONS:
+-		active = g_ptr_array_sized_new (3);
++		array = g_ptr_array_sized_new (3);
+ 		for (iter = priv->active_connections; iter; iter = g_slist_next (iter)) {
+ 			path = nm_active_connection_get_path (NM_ACTIVE_CONNECTION (iter->data));
+-			g_ptr_array_add (active, g_strdup (path));
++			if (path)
++				g_ptr_array_add (array, g_strdup (path));
+ 		}
+-		g_value_take_boxed (value, active);
++		g_value_take_boxed (value, array);
+ 		break;
+ 	case PROP_CONNECTIVITY:
+ 		g_value_set_uint (value, nm_connectivity_get_state (priv->connectivity));
+@@ -4787,6 +4791,15 @@ get_property (GObject *object, guint prop_id,
+ 	case PROP_SLEEPING:
+ 		g_value_set_boolean (value, priv->sleeping);
+ 		break;
++	case PROP_DEVICES:
++		array = g_ptr_array_sized_new (5);
++		for (iter = priv->devices; iter; iter = g_slist_next (iter)) {
++			path = nm_device_get_path (NM_DEVICE (iter->data));
++			if (path)
++				g_ptr_array_add (array, g_strdup (path));
++		}
++		g_value_take_boxed (value, array);
++		break;
+ 	default:
+ 		G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
+ 		break;
+@@ -5090,6 +5103,14 @@ nm_manager_class_init (NMManagerClass *manager_class)
+ 		                       FALSE,
+ 		                       G_PARAM_READABLE));
+ 
++	g_object_class_install_property
++		(object_class, PROP_DEVICES,
++		 g_param_spec_boxed (NM_MANAGER_DEVICES,
++		                     "Devices",
++		                     "Devices",
++		                     DBUS_TYPE_G_ARRAY_OF_OBJECT_PATH,
++		                     G_PARAM_READABLE));
++
+ 	/* signals */
+ 	signals[DEVICE_ADDED] =
+ 		g_signal_new ("device-added",
+diff --git a/src/nm-manager.h b/src/nm-manager.h
+index e972644..bfe6c2f 100644
+--- a/src/nm-manager.h
++++ b/src/nm-manager.h
+@@ -63,6 +63,7 @@ typedef enum {
+ #define NM_MANAGER_CONNECTIVITY "connectivity"
+ #define NM_MANAGER_PRIMARY_CONNECTION "primary-connection"
+ #define NM_MANAGER_ACTIVATING_CONNECTION "activating-connection"
++#define NM_MANAGER_DEVICES "devices"
+ 
+ /* Not exported */
+ #define NM_MANAGER_HOSTNAME "hostname"
+-- 
+1.8.5.3
+
+
+From 83c5cb987497cf83e932528673821241a35f686a Mon Sep 17 00:00:00 2001
+From: Thomas Haller <thaller@redhat.com>
+Date: Tue, 18 Feb 2014 13:57:52 +0100
+Subject: [PATCH 04/16] core: avoid returning NULL as dbus paths in NMManager
+
+(partial backport from commit ff7e47a41858881e102ce7c3686962f43d08cce4)
+---
+ src/nm-manager.c | 8 ++++----
+ 1 file changed, 4 insertions(+), 4 deletions(-)
+
+diff --git a/src/nm-manager.c b/src/nm-manager.c
+index 84fb81f..d4bd3de 100644
+--- a/src/nm-manager.c
++++ b/src/nm-manager.c
+@@ -4778,12 +4778,12 @@ get_property (GObject *object, guint prop_id,
+ 		g_value_set_uint (value, nm_connectivity_get_state (priv->connectivity));
+ 		break;
+ 	case PROP_PRIMARY_CONNECTION:
+-		path = priv->primary_connection ? nm_active_connection_get_path (priv->primary_connection) : "/";
+-		g_value_set_boxed (value, path);
++		path = priv->primary_connection ? nm_active_connection_get_path (priv->primary_connection) : NULL;
++		g_value_set_boxed (value, path ? path : "/");
+ 		break;
+ 	case PROP_ACTIVATING_CONNECTION:
+-		path = priv->activating_connection ? nm_active_connection_get_path (priv->activating_connection) : "/";
+-		g_value_set_boxed (value, path);
++		path = priv->activating_connection ? nm_active_connection_get_path (priv->activating_connection) : NULL;
++		g_value_set_boxed (value, path ? path : "/");
+ 		break;
+ 	case PROP_HOSTNAME:
+ 		g_value_set_string (value, priv->hostname);
+-- 
+1.8.5.3
+
+
+From 42cfaa5366050214d65d801e7a0dbea70095c313 Mon Sep 17 00:00:00 2001
+From: Dan Williams <dcbw@redhat.com>
+Date: Mon, 25 Nov 2013 12:06:02 -0600
+Subject: [PATCH 05/16] api/wifi: add AccessPoints property
+
+Helps other bindings.
+
+(cherry picked from commit a0c4483bdb9b4334da4d74a22db5d28e8bc8ccef)
+---
+ introspection/nm-device-wifi.xml |  8 ++++++++
+ src/devices/nm-device-wifi.c     | 22 ++++++++++++++++++++++
+ src/devices/nm-device-wifi.h     |  1 +
+ 3 files changed, 31 insertions(+)
+
+diff --git a/introspection/nm-device-wifi.xml b/introspection/nm-device-wifi.xml
+index dcfa20c..fff7433 100644
+--- a/introspection/nm-device-wifi.xml
++++ b/introspection/nm-device-wifi.xml
+@@ -50,11 +50,19 @@
+         The bit rate currently used by the wireless device, in kilobits/second (Kb/s).
+       </tp:docstring>
+     </property>
++
++    <property name="AccessPoints" type="ao" access="read">
++      <tp:docstring>
++        List of object paths of access point visible to this wireless device.
++      </tp:docstring>
++    </property>
++
+     <property name="ActiveAccessPoint" type="o" access="read">
+       <tp:docstring>
+         Object path of the access point currently used by the wireless device.
+       </tp:docstring>
+     </property>
++
+     <property name="WirelessCapabilities" type="u" access="read" tp:type="NM_802_11_DEVICE_CAP">
+       <tp:docstring>
+         The capabilities of the wireless device.
+diff --git a/src/devices/nm-device-wifi.c b/src/devices/nm-device-wifi.c
+index 147ed08..3157933 100644
+--- a/src/devices/nm-device-wifi.c
++++ b/src/devices/nm-device-wifi.c
+@@ -58,6 +58,8 @@
+ #include "nm-settings-connection.h"
+ #include "nm-enum-types.h"
+ #include "wifi-utils.h"
++#include "nm-dbus-glib-types.h"
++
+ 
+ static gboolean impl_device_get_access_points (NMDeviceWifi *device,
+                                                GPtrArray **aps,
+@@ -87,6 +89,7 @@ enum {
+ 	PROP_PERM_HW_ADDRESS,
+ 	PROP_MODE,
+ 	PROP_BITRATE,
++	PROP_ACCESS_POINTS,
+ 	PROP_ACTIVE_ACCESS_POINT,
+ 	PROP_CAPABILITIES,
+ 	PROP_SCANNING,
+@@ -793,6 +796,7 @@ remove_access_point (NMDeviceWifi *device,
+ 
+ 	g_signal_emit (device, signals[ACCESS_POINT_REMOVED], 0, ap);
+ 	priv->ap_list = g_slist_remove (priv->ap_list, ap);
++	g_object_notify (G_OBJECT (device), NM_DEVICE_WIFI_ACCESS_POINTS);
+ 	g_object_unref (ap);
+ 
+ 	if (recheck_available_connections)
+@@ -1854,6 +1858,7 @@ merge_scanned_ap (NMDeviceWifi *self,
+ 		priv->ap_list = g_slist_prepend (priv->ap_list, merge_ap);
+ 		nm_ap_export_to_dbus (merge_ap);
+ 		g_signal_emit (self, signals[ACCESS_POINT_ADDED], 0, merge_ap);
++		g_object_notify (G_OBJECT (self), NM_DEVICE_WIFI_ACCESS_POINTS);
+ 		nm_device_recheck_available_connections (NM_DEVICE (self));
+ 	}
+ }
+@@ -2875,6 +2880,7 @@ act_stage1_prepare (NMDevice *dev, NMDeviceStateReason *reason)
+ 		priv->ap_list = g_slist_prepend (priv->ap_list, ap);
+ 		nm_ap_export_to_dbus (ap);
+ 		g_signal_emit (self, signals[ACCESS_POINT_ADDED], 0, ap);
++		g_object_notify (G_OBJECT (self), NM_DEVICE_WIFI_ACCESS_POINTS);
+ 		nm_device_recheck_available_connections (NM_DEVICE (self));
+ 	}
+ 
+@@ -3500,6 +3506,8 @@ get_property (GObject *object, guint prop_id,
+ {
+ 	NMDeviceWifi *device = NM_DEVICE_WIFI (object);
+ 	NMDeviceWifiPrivate *priv = NM_DEVICE_WIFI_GET_PRIVATE (device);
++	GPtrArray *array;
++	GSList *iter;
+ 
+ 	switch (prop_id) {
+ 	case PROP_PERM_HW_ADDRESS:
+@@ -3514,6 +3522,12 @@ get_property (GObject *object, guint prop_id,
+ 	case PROP_CAPABILITIES:
+ 		g_value_set_uint (value, priv->capabilities);
+ 		break;
++	case PROP_ACCESS_POINTS:
++		array = g_ptr_array_sized_new (4);
++		for (iter = priv->ap_list; iter; iter = g_slist_next (iter))
++			g_ptr_array_add (array, g_strdup (nm_ap_get_dbus_path (NM_AP (iter->data))));
++		g_value_take_boxed (value, array);
++		break;
+ 	case PROP_ACTIVE_ACCESS_POINT:
+ 		if (priv->current_ap)
+ 			g_value_set_boxed (value, nm_ap_get_dbus_path (priv->current_ap));
+@@ -3609,6 +3623,14 @@ nm_device_wifi_class_init (NMDeviceWifiClass *klass)
+ 		                   0, G_MAXUINT32, 0,
+ 		                   G_PARAM_READABLE));
+ 
++	g_object_class_install_property
++		(object_class, PROP_ACCESS_POINTS,
++		 g_param_spec_boxed (NM_DEVICE_WIFI_ACCESS_POINTS,
++		                     "Access points",
++		                     "Access points",
++		                     DBUS_TYPE_G_ARRAY_OF_OBJECT_PATH,
++		                     G_PARAM_READABLE));
++
+ 	g_object_class_install_property (object_class, PROP_ACTIVE_ACCESS_POINT,
+ 		g_param_spec_boxed (NM_DEVICE_WIFI_ACTIVE_ACCESS_POINT,
+ 		                    "Active access point",
+diff --git a/src/devices/nm-device-wifi.h b/src/devices/nm-device-wifi.h
+index 6ea303e..36492b1 100644
+--- a/src/devices/nm-device-wifi.h
++++ b/src/devices/nm-device-wifi.h
+@@ -54,6 +54,7 @@ typedef enum {
+ #define NM_DEVICE_WIFI_PERMANENT_HW_ADDRESS "perm-hw-address"
+ #define NM_DEVICE_WIFI_MODE                "mode"
+ #define NM_DEVICE_WIFI_BITRATE             "bitrate"
++#define NM_DEVICE_WIFI_ACCESS_POINTS       "access-points"
+ #define NM_DEVICE_WIFI_ACTIVE_ACCESS_POINT "active-access-point"
+ #define NM_DEVICE_WIFI_CAPABILITIES        "wireless-capabilities"
+ #define NM_DEVICE_WIFI_SCANNING            "scanning"
+-- 
+1.8.5.3
+
+
+From ae3b391e9b870d6b61e83ee7f7511f17da807214 Mon Sep 17 00:00:00 2001
+From: Dan Williams <dcbw@redhat.com>
+Date: Wed, 8 Jan 2014 11:40:56 -0600
+Subject: [PATCH 06/16] api/wifi: add GetAllAccessPoints() method
+
+The original GetAccessPoints() method call never returned hidden SSID
+access points.  That's useful though, and the new AccessPoints
+property returns all of them too, so add this new method to return
+all access points, including hidden SSID ones.
+
+(cherry picked from commit 67676c65bf4dd0277544fdefe98965c6fbbe6344)
+---
+ introspection/nm-device-wifi.xml | 20 ++++++++++++++++++--
+ src/devices/nm-device-wifi.c     | 21 +++++++++++++++++++--
+ 2 files changed, 37 insertions(+), 4 deletions(-)
+
+diff --git a/introspection/nm-device-wifi.xml b/introspection/nm-device-wifi.xml
+index fff7433..65c7b71 100644
+--- a/introspection/nm-device-wifi.xml
++++ b/introspection/nm-device-wifi.xml
+@@ -6,11 +6,27 @@
+       <annotation name="org.freedesktop.DBus.GLib.CSymbol" value="impl_device_get_access_points"/>
+       <arg name="access_points" type="ao" direction="out">
+         <tp:docstring>
+-          List of access point object paths
++          List of access point object paths.
+         </tp:docstring>
+       </arg>
+       <tp:docstring>
+-        Get the list of access points visible to this device.
++        DEPRECATED.  Get the list of access points visible to this device.  Note
++        that this list does not include access points which hide their SSID.  To
++        retrieve a list of all access points (including hidden ones) use the
++        GetAllAccessPoints() method.
++      </tp:docstring>
++    </method>
++
++    <method name="GetAllAccessPoints">
++      <annotation name="org.freedesktop.DBus.GLib.CSymbol" value="impl_device_get_all_access_points"/>
++      <arg name="access_points" type="ao" direction="out">
++        <tp:docstring>
++          List of access point object paths.
++        </tp:docstring>
++      </arg>
++      <tp:docstring>
++        Get the list of all access points visible to this device, including
++        hidden ones for which the SSID is not yet known.
+       </tp:docstring>
+     </method>
+ 
+diff --git a/src/devices/nm-device-wifi.c b/src/devices/nm-device-wifi.c
+index 3157933..64f9bee 100644
+--- a/src/devices/nm-device-wifi.c
++++ b/src/devices/nm-device-wifi.c
+@@ -65,6 +65,10 @@ static gboolean impl_device_get_access_points (NMDeviceWifi *device,
+                                                GPtrArray **aps,
+                                                GError **err);
+ 
++static gboolean impl_device_get_all_access_points (NMDeviceWifi *device,
++                                                   GPtrArray **aps,
++                                                   GError **err);
++
+ static void impl_device_request_scan (NMDeviceWifi *device,
+                                       GHashTable *options,
+                                       DBusGMethodInvocation *context);
+@@ -1365,9 +1369,8 @@ impl_device_get_access_points (NMDeviceWifi *self,
+ 	GSList *elt;
+ 
+ 	*aps = g_ptr_array_new ();
+-
+ 	for (elt = priv->ap_list; elt; elt = g_slist_next (elt)) {
+-		NMAccessPoint * ap = NM_AP (elt->data);
++		NMAccessPoint *ap = NM_AP (elt->data);
+ 
+ 		if (nm_ap_get_ssid (ap))
+ 			g_ptr_array_add (*aps, g_strdup (nm_ap_get_dbus_path (ap)));
+@@ -1375,6 +1378,20 @@ impl_device_get_access_points (NMDeviceWifi *self,
+ 	return TRUE;
+ }
+ 
++static gboolean
++impl_device_get_all_access_points (NMDeviceWifi *self,
++                                   GPtrArray **aps,
++                                   GError **err)
++{
++	NMDeviceWifiPrivate *priv = NM_DEVICE_WIFI_GET_PRIVATE (self);
++	GSList *elt;
++
++	*aps = g_ptr_array_new ();
++	for (elt = priv->ap_list; elt; elt = g_slist_next (elt))
++		g_ptr_array_add (*aps, g_strdup (nm_ap_get_dbus_path (NM_AP (elt->data))));
++	return TRUE;
++}
++
+ static void
+ request_scan_cb (NMDevice *device,
+                  DBusGMethodInvocation *context,
+-- 
+1.8.5.3
+
+
+From 09fc69f709c5aead1c6fb482da796303a158a904 Mon Sep 17 00:00:00 2001
+From: Dan Williams <dcbw@redhat.com>
+Date: Mon, 25 Nov 2013 14:58:21 -0600
+Subject: [PATCH 07/16] api/settings: add Connections property
+
+Helps out bindings.
+
+(cherry picked from commit 69fc0d7c87e2284f1c90f3d41fffe9e91349e6be)
+---
+ introspection/nm-settings.xml |  6 ++++++
+ src/settings/nm-settings.c    | 22 ++++++++++++++++++++++
+ src/settings/nm-settings.h    |  1 +
+ 3 files changed, 29 insertions(+)
+
+diff --git a/introspection/nm-settings.xml b/introspection/nm-settings.xml
+index 7e02db7..bc41297 100644
+--- a/introspection/nm-settings.xml
++++ b/introspection/nm-settings.xml
+@@ -146,6 +146,12 @@
+       </arg>
+     </method>
+ 
++    <property name="Connections" type="ao" access="read">
++      <tp:docstring>
++        List of object paths of available network connection profiles.
++      </tp:docstring>
++    </property>
++
+     <property name="Hostname" type="s" access="read">
+       <tp:docstring>
+         The machine hostname stored in persistent configuration.
+diff --git a/src/settings/nm-settings.c b/src/settings/nm-settings.c
+index 43101f8..df15eee 100644
+--- a/src/settings/nm-settings.c
++++ b/src/settings/nm-settings.c
+@@ -162,6 +162,7 @@ enum {
+ 	PROP_UNMANAGED_SPECS,
+ 	PROP_HOSTNAME,
+ 	PROP_CAN_MODIFY,
++	PROP_CONNECTIONS,
+ 
+ 	LAST_PROP
+ };
+@@ -712,6 +713,7 @@ connection_removed (NMSettingsConnection *connection, gpointer user_data)
+ 	/* Re-emit for listeners like NMPolicy */
+ 	g_signal_emit (self, signals[CONNECTION_REMOVED], 0, connection);
+ 	g_signal_emit_by_name (self, NM_CP_SIGNAL_CONNECTION_REMOVED, connection);
++	g_object_notify (G_OBJECT (self), NM_SETTINGS_CONNECTIONS);
+ 
+ 	g_object_unref (connection);
+ }
+@@ -838,6 +840,7 @@ claim_connection (NMSettings *self,
+ 		/* Internal added signal */
+ 		g_signal_emit (self, signals[CONNECTION_ADDED], 0, connection);
+ 		g_signal_emit_by_name (self, NM_CP_SIGNAL_CONNECTION_ADDED, connection);
++		g_object_notify (G_OBJECT (self), NM_SETTINGS_CONNECTIONS);
+ 
+ 		/* Exported D-Bus signal */
+ 		g_signal_emit (self, signals[NEW_CONNECTION], 0, connection);
+@@ -1776,8 +1779,12 @@ get_property (GObject *object, guint prop_id,
+ 			  GValue *value, GParamSpec *pspec)
+ {
+ 	NMSettings *self = NM_SETTINGS (object);
++	NMSettingsPrivate *priv = NM_SETTINGS_GET_PRIVATE (self);
+ 	const GSList *specs, *iter;
+ 	GSList *copy = NULL;
++	GHashTableIter citer;
++	GPtrArray *array;
++	const char *path;
+ 
+ 	switch (prop_id) {
+ 	case PROP_UNMANAGED_SPECS:
+@@ -1796,6 +1803,13 @@ get_property (GObject *object, guint prop_id,
+ 	case PROP_CAN_MODIFY:
+ 		g_value_set_boolean (value, !!get_plugin (self, NM_SYSTEM_CONFIG_INTERFACE_CAP_MODIFY_CONNECTIONS));
+ 		break;
++	case PROP_CONNECTIONS:
++		array = g_ptr_array_sized_new (g_hash_table_size (priv->connections));
++		g_hash_table_iter_init (&citer, priv->connections);
++		while (g_hash_table_iter_next (&citer, (gpointer) &path, NULL))
++			g_ptr_array_add (array, g_strdup (path));
++		g_value_take_boxed (value, array);
++		break;
+ 	default:
+ 		G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
+ 		break;
+@@ -1841,6 +1855,14 @@ nm_settings_class_init (NMSettingsClass *class)
+ 		                       FALSE,
+ 		                       G_PARAM_READABLE));
+ 
++	g_object_class_install_property
++		(object_class, PROP_CONNECTIONS,
++		 g_param_spec_boxed (NM_SETTINGS_CONNECTIONS,
++		                     "Connections",
++		                     "Connections",
++		                     DBUS_TYPE_G_ARRAY_OF_OBJECT_PATH,
++		                     G_PARAM_READABLE));
++
+ 	/* signals */
+ 	signals[PROPERTIES_CHANGED] = 
+ 	                g_signal_new ("properties-changed",
+diff --git a/src/settings/nm-settings.h b/src/settings/nm-settings.h
+index 1f97240..0bedb36 100644
+--- a/src/settings/nm-settings.h
++++ b/src/settings/nm-settings.h
+@@ -43,6 +43,7 @@
+ #define NM_SETTINGS_UNMANAGED_SPECS "unmanaged-specs"
+ #define NM_SETTINGS_HOSTNAME        "hostname"
+ #define NM_SETTINGS_CAN_MODIFY      "can-modify"
++#define NM_SETTINGS_CONNECTIONS     "connections"
+ 
+ #define NM_SETTINGS_SIGNAL_CONNECTION_ADDED              "connection-added"
+ #define NM_SETTINGS_SIGNAL_CONNECTION_UPDATED            "connection-updated"
+-- 
+1.8.5.3
+
+
+From 8eb40232b00e028a55a7e786509a3f2e9a22ea9d Mon Sep 17 00:00:00 2001
+From: Dan Williams <dcbw@redhat.com>
+Date: Tue, 26 Nov 2013 09:39:26 -0600
+Subject: [PATCH 08/16] api/wimax: add Nsps (Network Service Providers)
+ property
+
+Helps out bindings.
+
+(cherry picked from commit 3964d06b648908e9887bc5e00e58db59e167cfb8)
+---
+ introspection/nm-device-wimax.xml   |  7 +++++++
+ src/devices/wimax/nm-device-wimax.c | 20 ++++++++++++++++++++
+ src/devices/wimax/nm-device-wimax.h |  1 +
+ 3 files changed, 28 insertions(+)
+
+diff --git a/introspection/nm-device-wimax.xml b/introspection/nm-device-wimax.xml
+index 6e41408..b48ffe9 100644
+--- a/introspection/nm-device-wimax.xml
++++ b/introspection/nm-device-wimax.xml
+@@ -14,6 +14,13 @@
+       </tp:docstring>
+     </method>
+ 
++    <property name="Nsps" type="ao" access="read">
++      <tp:docstring>
++        List of object paths of Network Service Providers (NSPs) visible to this
++        WiMAX device.
++      </tp:docstring>
++    </property>
++
+     <property name="HwAddress" type="s" access="read">
+       <tp:docstring>
+         Hardware address of the device.
+diff --git a/src/devices/wimax/nm-device-wimax.c b/src/devices/wimax/nm-device-wimax.c
+index ab3c109..4273a49 100644
+--- a/src/devices/wimax/nm-device-wimax.c
++++ b/src/devices/wimax/nm-device-wimax.c
+@@ -44,6 +44,7 @@
+ #include "nm-rfkill-manager.h"
+ #include "iwmxsdk.h"
+ #include "nm-enum-types.h"
++#include "nm-dbus-glib-types.h"
+ 
+ static gboolean impl_device_get_nsp_list (NMDeviceWimax *device, GPtrArray **list, GError **error);
+ 
+@@ -53,6 +54,7 @@ G_DEFINE_TYPE (NMDeviceWimax, nm_device_wimax, NM_TYPE_DEVICE)
+ 
+ enum {
+ 	PROP_0,
++	PROP_NSPS,
+ 	PROP_ACTIVE_NSP,
+ 	PROP_CENTER_FREQ,
+ 	PROP_RSSI,
+@@ -236,6 +238,7 @@ remove_all_nsps (NMDeviceWimax *self)
+ 
+ 		priv->nsp_list = g_slist_remove (priv->nsp_list, nsp);
+ 		g_signal_emit (self, signals[NSP_REMOVED], 0, nsp);
++		g_object_notify (G_OBJECT (self), NM_DEVICE_WIMAX_NSPS);
+ 		g_object_unref (nsp);
+ 	}
+ 
+@@ -1003,6 +1006,7 @@ wmx_scan_result_cb (struct wmxsdk *wmxsdk,
+ 			priv->nsp_list = g_slist_append (priv->nsp_list, nsp);
+ 			nm_wimax_nsp_export_to_dbus (nsp);
+ 			g_signal_emit (self, signals[NSP_ADDED], 0, nsp);
++			g_object_notify (G_OBJECT (self), NM_DEVICE_WIMAX_NSPS);
+ 			nm_device_recheck_available_connections (NM_DEVICE (self));
+ 		}
+ 	}
+@@ -1293,8 +1297,16 @@ get_property (GObject *object, guint prop_id,
+ {
+ 	NMDeviceWimax *self = NM_DEVICE_WIMAX (object);
+ 	NMDeviceWimaxPrivate *priv = NM_DEVICE_WIMAX_GET_PRIVATE (self);
++	GPtrArray *array;
++	GSList *iter;
+ 
+ 	switch (prop_id) {
++	case PROP_NSPS:
++		array = g_ptr_array_sized_new (4);
++		for (iter = priv->nsp_list; iter; iter = g_slist_next (iter))
++			g_ptr_array_add (array, g_strdup (nm_wimax_nsp_get_dbus_path (NM_WIMAX_NSP (iter->data))));
++		g_value_take_boxed (value, array);
++		break;
+ 	case PROP_ACTIVE_NSP:
+ 		if (priv->current_nsp)
+ 			g_value_set_boxed (value, nm_wimax_nsp_get_dbus_path (priv->current_nsp));
+@@ -1385,6 +1397,14 @@ nm_device_wimax_class_init (NMDeviceWimaxClass *klass)
+ 	device_class->state_changed = device_state_changed;
+ 
+ 	/* Properties */
++	g_object_class_install_property
++		(object_class, PROP_NSPS,
++		 g_param_spec_boxed (NM_DEVICE_WIMAX_NSPS,
++		                     "Network access points",
++		                     "Network access points",
++		                     DBUS_TYPE_G_ARRAY_OF_OBJECT_PATH,
++		                     G_PARAM_READABLE));
++
+ 	g_object_class_install_property (object_class, PROP_ACTIVE_NSP,
+ 		g_param_spec_boxed (NM_DEVICE_WIMAX_ACTIVE_NSP,
+ 		                    "Active NSP",
+diff --git a/src/devices/wimax/nm-device-wimax.h b/src/devices/wimax/nm-device-wimax.h
+index 1baf5b2..938c8d0 100644
+--- a/src/devices/wimax/nm-device-wimax.h
++++ b/src/devices/wimax/nm-device-wimax.h
+@@ -43,6 +43,7 @@ typedef enum
+ 	NM_WIMAX_ERROR_NSP_NOT_FOUND,            /*< nick=NspNotFound >*/
+ } NMWimaxError;
+ 
++#define NM_DEVICE_WIMAX_NSPS             "nsps"
+ #define NM_DEVICE_WIMAX_ACTIVE_NSP       "active-nsp"
+ #define NM_DEVICE_WIMAX_CENTER_FREQUENCY "center-frequency"
+ #define NM_DEVICE_WIMAX_RSSI             "rssi"
+-- 
+1.8.5.3
+
+
+From b17a4e7c91c30f7fbfaf4611899d00d7fcf1bcf7 Mon Sep 17 00:00:00 2001
+From: Dan Williams <dcbw@redhat.com>
+Date: Tue, 26 Nov 2013 09:45:21 -0600
+Subject: [PATCH 09/16] api/settings: expose the ConnectionRemoved signal
+
+Helps out bindings.
+
+(cherry picked from commit 452f8232b79687312451d4072c1d6bf0af25ee50)
+---
+ introspection/nm-settings-connection.xml |  5 +++--
+ introspection/nm-settings.xml            | 15 +++++++++++++++
+ src/settings/nm-settings.c               |  4 +++-
+ 3 files changed, 21 insertions(+), 3 deletions(-)
+
+diff --git a/introspection/nm-settings-connection.xml b/introspection/nm-settings-connection.xml
+index 0937380..df75d9c 100644
+--- a/introspection/nm-settings-connection.xml
++++ b/introspection/nm-settings-connection.xml
+@@ -115,8 +115,9 @@
+             <tp:docstring>
+                 Emitted when this connection is no longer available.  This
+                 happens when the connection is deleted or if it is no longer
+-                accessable by any of the system's logged-in users.  After
+-                receipt of this signal, the object no longer exists.
++                accessible by any of the system's logged-in users.  After
++                receipt of this signal, the object no longer exists.  Also
++                see the Settings.ConnectionRemoved signal.
+             </tp:docstring>
+         </signal>
+ 
+diff --git a/introspection/nm-settings.xml b/introspection/nm-settings.xml
+index bc41297..1082c57 100644
+--- a/introspection/nm-settings.xml
++++ b/introspection/nm-settings.xml
+@@ -190,6 +190,21 @@
+       </arg>
+     </signal>
+ 
++    <signal name="ConnectionRemoved">
++      <tp:docstring>
++        Emitted when a connection is no longer available.  This happens when
++        the connection is deleted or if it is no longer accessible by any of
++        the system's logged-in users.  After receipt of this signal, the
++        connection no longer exists and cannot be used.  Also see the
++        Settings.Connection.Removed signal.
++      </tp:docstring>
++      <arg name="connection" type="o">
++        <tp:docstring>
++          Object path of the removed connection.
++        </tp:docstring>
++      </arg>
++    </signal>
++
+   </interface>
+ </node>
+ 
+diff --git a/src/settings/nm-settings.c b/src/settings/nm-settings.c
+index df15eee..55621e1 100644
+--- a/src/settings/nm-settings.c
++++ b/src/settings/nm-settings.c
+@@ -710,8 +710,10 @@ connection_removed (NMSettingsConnection *connection, gpointer user_data)
+ 	g_hash_table_remove (NM_SETTINGS_GET_PRIVATE (user_data)->connections,
+ 	                     (gpointer) nm_connection_get_path (NM_CONNECTION (connection)));
+ 
+-	/* Re-emit for listeners like NMPolicy */
++	/* Notify D-Bus */
+ 	g_signal_emit (self, signals[CONNECTION_REMOVED], 0, connection);
++
++	/* Re-emit for listeners like NMPolicy */
+ 	g_signal_emit_by_name (self, NM_CP_SIGNAL_CONNECTION_REMOVED, connection);
+ 	g_object_notify (G_OBJECT (self), NM_SETTINGS_CONNECTIONS);
+ 
+-- 
+1.8.5.3
+
+
+From cb88605860b5a5654a0c88096848d047c6f11429 Mon Sep 17 00:00:00 2001
+From: Dan Williams <dcbw@redhat.com>
+Date: Wed, 8 Jan 2014 11:55:03 -0600
+Subject: [PATCH 10/16] libnm-glib: add support for non-pseudo-property
+ added/removed signals
+
+With the addition of D-Bus properties for object-array properties in
+NetworkManager core, libnm-glib can use these properties instead of
+the pseudo-property stuff.  However, we need to maintain API and
+provide individual added/removed signals for these properties, and
+that requires diff-ing the new and old object arrays.  Add the
+infrastructure for doing that.
+
+(cherry picked from commit 4bf27b2e68b07a6e9c602df3705a31ce9edbca99)
+---
+ libnm-glib/nm-object-private.h |   1 +
+ libnm-glib/nm-object.c         | 106 ++++++++++++++++++++++++++++++++++++++---
+ 2 files changed, 100 insertions(+), 7 deletions(-)
+
+diff --git a/libnm-glib/nm-object-private.h b/libnm-glib/nm-object-private.h
+index 1658c1d..171be10 100644
+--- a/libnm-glib/nm-object-private.h
++++ b/libnm-glib/nm-object-private.h
+@@ -37,6 +37,7 @@ typedef struct {
+ 	gpointer field;
+ 	PropertyMarshalFunc func;
+ 	GType object_type;
++	const char *signal_prefix;
+ } NMPropertiesInfo;
+ 
+ DBusGProxy *_nm_object_new_proxy (NMObject *self,
+diff --git a/libnm-glib/nm-object.c b/libnm-glib/nm-object.c
+index e13fbf3..9e62ea8 100644
+--- a/libnm-glib/nm-object.c
++++ b/libnm-glib/nm-object.c
+@@ -24,6 +24,7 @@
+ #include <string.h>
+ #include <gio/gio.h>
+ #include <stdlib.h>
++#include <stdio.h>
+ #include <nm-utils.h>
+ #include "NetworkManager.h"
+ #include "nm-object.h"
+@@ -52,8 +53,8 @@ static GHashTable *type_funcs, *type_async_funcs;
+ typedef struct {
+ 	PropertyMarshalFunc func;
+ 	GType object_type;
+-
+ 	gpointer field;
++	const char *signal_prefix;
+ } PropertyInfo;
+ 
+ static void reload_complete (NMObject *object);
+@@ -761,31 +762,121 @@ typedef struct {
+ 	const char *property_name;
+ } ObjectCreatedData;
+ 
++/* Places items from 'needles' that are not in 'haystack' into 'diff' */
++static void
++array_diff (GPtrArray *needles, GPtrArray *haystack, GPtrArray *diff)
++{
++	guint i, j;
++	GObject *obj;
++
++	g_assert (needles);
++	g_assert (haystack);
++	g_assert (diff);
++
++	for (i = 0; i < needles->len; i++) {
++		obj = g_ptr_array_index (needles, i);
++
++		for (j = 0; j < haystack->len; j++) {
++			if (g_ptr_array_index (haystack, j) == obj)
++				break;
++		}
++
++		if (j == haystack->len)
++			g_ptr_array_add (diff, obj);
++	}
++}
++
++static void
++emit_added_removed_signal (NMObject *self,
++                           const char *signal_prefix,
++                           NMObject *changed,
++                           gboolean added)
++{
++	char buf[50];
++	int ret;
++
++	ret = snprintf (buf, sizeof (buf), "%s-%s", signal_prefix, added ? "added" : "removed");
++	g_assert (ret > 0);
++	g_assert (ret < sizeof (buf));
++	g_signal_emit_by_name (self, buf, changed);
++}
++
+ static void
+ object_property_complete (ObjectCreatedData *odata)
+ {
+ 	NMObject *self = odata->self;
+ 	NMObjectPrivate *priv = NM_OBJECT_GET_PRIVATE (self);
+ 	PropertyInfo *pi = odata->pi;
++	gboolean different = TRUE;
+ 
+ 	if (odata->array) {
+-		GPtrArray **array = pi->field;
++		GPtrArray *old = *((GPtrArray **) pi->field);
++		GPtrArray *new;
+ 		int i;
+ 
+-		if (*array)
+-			g_boxed_free (NM_TYPE_OBJECT_ARRAY, *array);
+-		*array = g_ptr_array_sized_new (odata->length);
++		/* Build up new array */
++		new = g_ptr_array_sized_new (odata->length);
+ 		for (i = 0; i < odata->length; i++)
+-			add_to_object_array_unique (*array, odata->objects[i]);
++			add_to_object_array_unique (new, odata->objects[i]);
++
++		if (pi->signal_prefix) {
++			GPtrArray *added = g_ptr_array_sized_new (3);
++			GPtrArray *removed = g_ptr_array_sized_new (3);
++
++			if (old) {
++				/* Find objects in 'old' that do not exist in 'new' */
++				array_diff (old, new, removed);
++
++				/* Find objects in 'new' that do not exist in old */
++				array_diff (new, old, added);
++			} else {
++				for (i = 0; i < new->len; i++)
++					g_ptr_array_add (added, g_ptr_array_index (new, i));
++			}
++
++			*((GPtrArray **) pi->field) = new;
++
++			/* Emit added & removed */
++			for (i = 0; i < removed->len; i++) {
++				emit_added_removed_signal (self,
++				                           pi->signal_prefix,
++				                           g_ptr_array_index (removed, i),
++				                           FALSE);
++			}
++
++			for (i = 0; i < added->len; i++) {
++				emit_added_removed_signal (self,
++				                           pi->signal_prefix,
++				                           g_ptr_array_index (added, i),
++				                           TRUE);
++			}
++
++			different = removed->len || added->len;
++			g_ptr_array_free (added, TRUE);
++			g_ptr_array_free (removed, TRUE);
++		} else {
++			/* No added/removed signals to send, just replace the property with
++			 * the new values.
++			 */
++			*((GPtrArray **) pi->field) = new;
++			different = TRUE;
++		}
++
++		/* Free old array last since it will release references, thus freeing
++		 * any objects in the 'removed' array.
++		 */
++		if (old)
++			g_boxed_free (NM_TYPE_OBJECT_ARRAY, old);
+ 	} else {
+ 		GObject **obj_p = pi->field;
+ 
++		different = (*obj_p != odata->objects[0]);
+ 		if (*obj_p)
+ 			g_object_unref (*obj_p);
+ 		*obj_p = odata->objects[0];
+ 	}
+ 
+-	if (odata->property_name)
++	if (different && odata->property_name)
+ 		_nm_object_queue_notify (self, odata->property_name);
+ 
+ 	if (priv->reload_results && --priv->reload_remaining == 0)
+@@ -1135,6 +1226,7 @@ _nm_object_register_properties (NMObject *object,
+ 		pi->func = tmp->func ? tmp->func : demarshal_generic;
+ 		pi->object_type = tmp->object_type;
+ 		pi->field = tmp->field;
++		pi->signal_prefix = tmp->signal_prefix;
+ 		g_hash_table_insert (instance, g_strdup (tmp->name), pi);
+ 	}
+ }
+-- 
+1.8.5.3
+
+
+From 395252402e6b16791393a39a60f688c2f9545da0 Mon Sep 17 00:00:00 2001
+From: Dan Williams <dcbw@redhat.com>
+Date: Wed, 8 Jan 2014 11:59:54 -0600
+Subject: [PATCH 11/16] libnm-glib: convert NMDeviceWifi AccessPoints to a real
+ property
+
+Note that this will cause the nm_device_wifi_get_access_points() to
+return hidden-SSID access point objects immediately, which it
+previously did not do until added/removed signals were sent by
+NetworkManager for a hidden SSID AP.  Some clients may not handle
+this correctly, but given that they would have crashed when the
+first hidden SSID AP was found anyway, they should just be fixed.
+
+(cherry picked from commit 511f3dcef3b82fcd749d8d8fc1759670aba85e33)
+---
+ libnm-glib/nm-device-wifi.c | 68 +++++++++++++++++++++++----------------------
+ libnm-glib/nm-device-wifi.h |  1 +
+ 2 files changed, 36 insertions(+), 33 deletions(-)
+
+diff --git a/libnm-glib/nm-device-wifi.c b/libnm-glib/nm-device-wifi.c
+index ebad121..a6e57d0 100644
+--- a/libnm-glib/nm-device-wifi.c
++++ b/libnm-glib/nm-device-wifi.c
+@@ -73,6 +73,7 @@ enum {
+ 	PROP_BITRATE,
+ 	PROP_ACTIVE_ACCESS_POINT,
+ 	PROP_WIRELESS_CAPABILITIES,
++	PROP_ACCESS_POINTS,
+ 
+ 	LAST_PROP
+ };
+@@ -90,7 +91,6 @@ enum {
+ 
+ 	LAST_SIGNAL
+ };
+-
+ static guint signals[LAST_SIGNAL] = { 0 };
+ 
+ /**
+@@ -390,31 +390,6 @@ nm_device_wifi_request_scan_simple (NMDeviceWifi *device,
+ }
+ 
+ static void
+-access_point_added (NMObject *self, NMObject *ap)
+-{
+-	g_signal_emit (self, signals[ACCESS_POINT_ADDED], 0, ap);
+-}
+-
+-static void
+-access_point_removed (NMObject *self_obj, NMObject *ap_obj)
+-{
+-	NMDeviceWifi *self = NM_DEVICE_WIFI (self_obj);
+-	NMDeviceWifiPrivate *priv = NM_DEVICE_WIFI_GET_PRIVATE (self);
+-	NMAccessPoint *ap = NM_ACCESS_POINT (ap_obj);
+-
+-	if (ap == priv->active_ap) {
+-		g_object_unref (priv->active_ap);
+-		priv->active_ap = NULL;
+-		_nm_object_queue_notify (NM_OBJECT (self), NM_DEVICE_WIFI_ACTIVE_ACCESS_POINT);
+-
+-		priv->rate = 0;
+-		_nm_object_queue_notify (NM_OBJECT (self), NM_DEVICE_WIFI_BITRATE);
+-	}
+-
+-	g_signal_emit (self, signals[ACCESS_POINT_REMOVED], 0, ap);
+-}
+-
+-static void
+ clean_up_aps (NMDeviceWifi *self, gboolean notify)
+ {
+ 	NMDeviceWifiPrivate *priv;
+@@ -592,6 +567,9 @@ get_property (GObject *object,
+ 	case PROP_WIRELESS_CAPABILITIES:
+ 		g_value_set_uint (value, nm_device_wifi_get_capabilities (self));
+ 		break;
++	case PROP_ACCESS_POINTS:
++		g_value_set_boxed (value, nm_device_wifi_get_access_points (self));
++		break;
+ 	default:
+ 		G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
+ 		break;
+@@ -635,20 +613,28 @@ register_properties (NMDeviceWifi *device)
+ 		{ NM_DEVICE_WIFI_BITRATE,              &priv->rate },
+ 		{ NM_DEVICE_WIFI_ACTIVE_ACCESS_POINT,  &priv->active_ap, NULL, NM_TYPE_ACCESS_POINT },
+ 		{ NM_DEVICE_WIFI_CAPABILITIES,         &priv->wireless_caps },
++		{ NM_DEVICE_WIFI_ACCESS_POINTS,        &priv->aps, NULL, NM_TYPE_ACCESS_POINT, "access-point" },
+ 		{ NULL },
+ 	};
+ 
+ 	_nm_object_register_properties (NM_OBJECT (device),
+ 	                                priv->proxy,
+ 	                                property_info);
++}
++
++static void
++access_point_removed (NMDeviceWifi *self, NMAccessPoint *ap)
++{
++	NMDeviceWifiPrivate *priv = NM_DEVICE_WIFI_GET_PRIVATE (self);
++
++	if (ap == priv->active_ap) {
++		g_object_unref (priv->active_ap);
++		priv->active_ap = NULL;
++		_nm_object_queue_notify (NM_OBJECT (self), NM_DEVICE_WIFI_ACTIVE_ACCESS_POINT);
+ 
+-	_nm_object_register_pseudo_property (NM_OBJECT (device),
+-	                                     priv->proxy,
+-	                                     "AccessPoints",
+-	                                     &priv->aps,
+-	                                     NM_TYPE_ACCESS_POINT,
+-	                                     access_point_added,
+-	                                     access_point_removed);
++		priv->rate = 0;
++		_nm_object_queue_notify (NM_OBJECT (self), NM_DEVICE_WIFI_BITRATE);
++	}
+ }
+ 
+ static void
+@@ -719,6 +705,7 @@ nm_device_wifi_class_init (NMDeviceWifiClass *wifi_class)
+ 	object_class->dispose = dispose;
+ 	object_class->finalize = finalize;
+ 	device_class->connection_compatible = connection_compatible;
++	wifi_class->access_point_removed = access_point_removed;
+ 
+ 	/* properties */
+ 
+@@ -800,6 +787,21 @@ nm_device_wifi_class_init (NMDeviceWifiClass *wifi_class)
+ 		                    0, G_MAXUINT32, 0,
+ 		                    G_PARAM_READABLE));
+ 
++	/**
++	 * NMDeviceWifi:access-points:
++	 *
++	 * List of all Wi-Fi access points the device can see.
++	 *
++	 * Since: 0.9.10
++	 **/
++	g_object_class_install_property
++		(object_class, PROP_ACCESS_POINTS,
++		 g_param_spec_boxed (NM_DEVICE_WIFI_ACCESS_POINTS,
++		                     "AccessPoints",
++		                     "Access Points",
++		                     NM_TYPE_OBJECT_ARRAY,
++		                     G_PARAM_READABLE));
++
+ 	/* signals */
+ 
+ 	/**
+diff --git a/libnm-glib/nm-device-wifi.h b/libnm-glib/nm-device-wifi.h
+index 76d76b4..f9b30d9 100644
+--- a/libnm-glib/nm-device-wifi.h
++++ b/libnm-glib/nm-device-wifi.h
+@@ -67,6 +67,7 @@ GQuark nm_device_wifi_error_quark (void);
+ #define NM_DEVICE_WIFI_BITRATE             "bitrate"
+ #define NM_DEVICE_WIFI_ACTIVE_ACCESS_POINT "active-access-point"
+ #define NM_DEVICE_WIFI_CAPABILITIES        "wireless-capabilities"
++#define NM_DEVICE_WIFI_ACCESS_POINTS       "access-points"
+ 
+ typedef struct {
+ 	NMDevice parent;
+-- 
+1.8.5.3
+
+
+From 3eece1179930f8e98f9cd80f48f8e61006d5c51b Mon Sep 17 00:00:00 2001
+From: Dan Williams <dcbw@redhat.com>
+Date: Wed, 8 Jan 2014 12:09:40 -0600
+Subject: [PATCH 12/16] libnm-glib: convert NMDeviceWimax NSPs to a real
+ property
+
+(cherry picked from commit 41d735b9a129e88b22c510589e73fcf317c664e0)
+---
+ libnm-glib/nm-device-wimax.c | 74 +++++++++++++++++++++++---------------------
+ libnm-glib/nm-device-wimax.h |  1 +
+ 2 files changed, 39 insertions(+), 36 deletions(-)
+
+diff --git a/libnm-glib/nm-device-wimax.c b/libnm-glib/nm-device-wimax.c
+index c676e13..a3cc510 100644
+--- a/libnm-glib/nm-device-wimax.c
++++ b/libnm-glib/nm-device-wimax.c
+@@ -66,6 +66,7 @@ enum {
+ 	PROP_CINR,
+ 	PROP_TX_POWER,
+ 	PROP_BSID,
++	PROP_NSPS,
+ 
+ 	LAST_PROP
+ };
+@@ -84,7 +85,6 @@ enum {
+ 
+ 	LAST_SIGNAL
+ };
+-
+ static guint signals[LAST_SIGNAL] = { 0 };
+ 
+ /**
+@@ -237,28 +237,6 @@ nm_device_wimax_get_nsp_by_path (NMDeviceWimax *wimax,
+ }
+ 
+ static void
+-nsp_added (NMObject *self, NMObject *nsp)
+-{
+-	g_signal_emit (self, signals[NSP_ADDED], 0, nsp);
+-}
+-
+-static void
+-nsp_removed (NMObject *self_obj, NMObject *nsp_obj)
+-{
+-	NMDeviceWimax *self = NM_DEVICE_WIMAX (self_obj);
+-	NMDeviceWimaxPrivate *priv = NM_DEVICE_WIMAX_GET_PRIVATE (self);
+-	NMWimaxNsp *nsp = NM_WIMAX_NSP (nsp_obj);
+-
+-	if (nsp == priv->active_nsp) {
+-		g_object_unref (priv->active_nsp);
+-		priv->active_nsp = NULL;
+-		_nm_object_queue_notify (NM_OBJECT (self), NM_DEVICE_WIMAX_ACTIVE_NSP);
+-	}
+-
+-	g_signal_emit (self, signals[NSP_REMOVED], 0, nsp);
+-}
+-
+-static void
+ clean_up_nsps (NMDeviceWimax *self, gboolean notify)
+ {
+ 	NMDeviceWimaxPrivate *priv;
+@@ -467,6 +445,9 @@ get_property (GObject *object,
+ 	case PROP_BSID:
+ 		g_value_set_string (value, nm_device_wimax_get_bsid (self));
+ 		break;
++	case PROP_NSPS:
++		g_value_set_boxed (value, nm_device_wimax_get_nsps (self));
++		break;
+ 	default:
+ 		G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
+ 		break;
+@@ -542,27 +523,32 @@ register_properties (NMDeviceWimax *wimax)
+ {
+ 	NMDeviceWimaxPrivate *priv = NM_DEVICE_WIMAX_GET_PRIVATE (wimax);
+ 	const NMPropertiesInfo property_info[] = {
+-		{ NM_DEVICE_WIMAX_HW_ADDRESS, &priv->hw_address },
+-		{ NM_DEVICE_WIMAX_ACTIVE_NSP, &priv->active_nsp, NULL, NM_TYPE_WIMAX_NSP },
++		{ NM_DEVICE_WIMAX_HW_ADDRESS,       &priv->hw_address },
++		{ NM_DEVICE_WIMAX_ACTIVE_NSP,       &priv->active_nsp, NULL, NM_TYPE_WIMAX_NSP },
+ 		{ NM_DEVICE_WIMAX_CENTER_FREQUENCY, &priv->center_freq },
+-		{ NM_DEVICE_WIMAX_RSSI, &priv->rssi },
+-		{ NM_DEVICE_WIMAX_CINR, &priv->cinr },
+-		{ NM_DEVICE_WIMAX_TX_POWER, &priv->tx_power },
+-		{ NM_DEVICE_WIMAX_BSID, &priv->bsid },
++		{ NM_DEVICE_WIMAX_RSSI,             &priv->rssi },
++		{ NM_DEVICE_WIMAX_CINR,             &priv->cinr },
++		{ NM_DEVICE_WIMAX_TX_POWER,         &priv->tx_power },
++		{ NM_DEVICE_WIMAX_BSID,             &priv->bsid },
++		{ NM_DEVICE_WIMAX_NSPS,             &priv->nsps,       NULL, NM_TYPE_WIMAX_NSP, "nsp" },
+ 		{ NULL },
+ 	};
+ 
+ 	_nm_object_register_properties (NM_OBJECT (wimax),
+ 	                                priv->proxy,
+ 	                                property_info);
++}
+ 
+-	_nm_object_register_pseudo_property (NM_OBJECT (wimax),
+-	                                     priv->proxy,
+-	                                     "NspList",
+-	                                     &priv->nsps,
+-	                                     NM_TYPE_WIMAX_NSP,
+-	                                     nsp_added,
+-	                                     nsp_removed);
++static void
++nsp_removed (NMDeviceWimax *self, NMWimaxNsp *nsp)
++{
++	NMDeviceWimaxPrivate *priv = NM_DEVICE_WIMAX_GET_PRIVATE (self);
++
++	if (nsp == priv->active_nsp) {
++		g_object_unref (priv->active_nsp);
++		priv->active_nsp = NULL;
++		_nm_object_queue_notify (NM_OBJECT (self), NM_DEVICE_WIMAX_ACTIVE_NSP);
++	}
+ }
+ 
+ static void
+@@ -615,6 +601,7 @@ nm_device_wimax_class_init (NMDeviceWimaxClass *wimax_class)
+ 	object_class->get_property = get_property;
+ 	object_class->dispose = dispose;
+ 	device_class->connection_compatible = connection_compatible;
++	wimax_class->nsp_removed = nsp_removed;
+ 
+ 	/* properties */
+ 
+@@ -719,6 +706,21 @@ nm_device_wimax_class_init (NMDeviceWimaxClass *wimax_class)
+ 		                      NULL,
+ 		                      G_PARAM_READABLE));
+ 
++	/**
++	 * NMDeviceWimax:nsps:
++	 *
++	 * List of all WiMAX Network Service Providers the device can see.
++	 *
++	 * Since: 0.9.10
++	 **/
++	g_object_class_install_property
++		(object_class, PROP_NSPS,
++		 g_param_spec_boxed (NM_DEVICE_WIMAX_NSPS,
++		                     "NSPs",
++		                     "Network Service Providers",
++		                     NM_TYPE_OBJECT_ARRAY,
++		                     G_PARAM_READABLE));
++
+ 	/* signals */
+ 
+ 	/**
+diff --git a/libnm-glib/nm-device-wimax.h b/libnm-glib/nm-device-wimax.h
+index c0550d1..b2282d4 100644
+--- a/libnm-glib/nm-device-wimax.h
++++ b/libnm-glib/nm-device-wimax.h
+@@ -62,6 +62,7 @@ GQuark nm_device_wimax_error_quark (void);
+ #define NM_DEVICE_WIMAX_CINR             "cinr"
+ #define NM_DEVICE_WIMAX_TX_POWER         "tx-power"
+ #define NM_DEVICE_WIMAX_BSID             "bsid"
++#define NM_DEVICE_WIMAX_NSPS             "nsps"
+ 
+ typedef struct {
+ 	NMDevice parent;
+-- 
+1.8.5.3
+
+
+From 38b591d8a21140d9bb732bd6119e4ce55e8d0c59 Mon Sep 17 00:00:00 2001
+From: Dan Williams <dcbw@redhat.com>
+Date: Wed, 8 Jan 2014 12:24:36 -0600
+Subject: [PATCH 13/16] libnm-glib: convert NMClient Devices to a real property
+
+(cherry picked from commit 1878a5e4c99291c385337347dc496609c865d004)
+---
+ libnm-glib/nm-client.c | 43 ++++++++++++++++++++-----------------------
+ libnm-glib/nm-client.h |  1 +
+ 2 files changed, 21 insertions(+), 23 deletions(-)
+
+diff --git a/libnm-glib/nm-client.c b/libnm-glib/nm-client.c
+index 44fb24d..979656f 100644
+--- a/libnm-glib/nm-client.c
++++ b/libnm-glib/nm-client.c
+@@ -100,6 +100,7 @@ enum {
+ 	PROP_CONNECTIVITY,
+ 	PROP_PRIMARY_CONNECTION,
+ 	PROP_ACTIVATING_CONNECTION,
++	PROP_DEVICES,
+ 
+ 	LAST_PROP
+ };
+@@ -120,9 +121,6 @@ static void proxy_name_owner_changed (DBusGProxy *proxy,
+ 									  const char *new_owner,
+ 									  gpointer user_data);
+ 
+-static void client_device_added (NMObject *client, NMObject *device);
+-static void client_device_removed (NMObject *client, NMObject *device);
+-
+ /**********************************************************************/
+ 
+ /**
+@@ -195,20 +193,13 @@ register_properties (NMClient *client)
+ 		{ NM_CLIENT_CONNECTIVITY,              &priv->connectivity },
+ 		{ NM_CLIENT_PRIMARY_CONNECTION,        &priv->primary_connection, NULL, NM_TYPE_ACTIVE_CONNECTION },
+ 		{ NM_CLIENT_ACTIVATING_CONNECTION,     &priv->activating_connection, NULL, NM_TYPE_ACTIVE_CONNECTION },
++		{ NM_CLIENT_DEVICES,                   &priv->devices, NULL, NM_TYPE_DEVICE, "device" },
+ 		{ NULL },
+ 	};
+ 
+ 	_nm_object_register_properties (NM_OBJECT (client),
+ 	                                priv->client_proxy,
+ 	                                property_info);
+-
+-	_nm_object_register_pseudo_property (NM_OBJECT (client),
+-	                                     priv->client_proxy,
+-	                                     "Devices",
+-	                                     &priv->devices,
+-	                                     NM_TYPE_DEVICE,
+-	                                     client_device_added,
+-	                                     client_device_removed);
+ }
+ 
+ #define NM_AUTH_PERMISSION_ENABLE_DISABLE_NETWORK     "org.freedesktop.NetworkManager.enable-disable-network"
+@@ -1398,18 +1389,6 @@ proxy_name_owner_changed (DBusGProxy *proxy,
+ 	}
+ }
+ 
+-static void
+-client_device_added (NMObject *client, NMObject *device)
+-{
+-	g_signal_emit (client, signals[DEVICE_ADDED], 0, device);
+-}
+-
+-static void
+-client_device_removed (NMObject *client, NMObject *device)
+-{
+-	g_signal_emit (client, signals[DEVICE_REMOVED], 0, device);
+-}
+-
+ /**
+  * nm_client_get_connectivity:
+  * @client: an #NMClient
+@@ -2128,6 +2107,9 @@ get_property (GObject *object,
+ 	case PROP_ACTIVATING_CONNECTION:
+ 		g_value_set_object (value, priv->activating_connection);
+ 		break;
++	case PROP_DEVICES:
++		g_value_set_boxed (value, nm_client_get_devices (self));
++		break;
+ 	default:
+ 		G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
+ 		break;
+@@ -2356,6 +2338,21 @@ nm_client_class_init (NMClientClass *client_class)
+ 		                      NM_TYPE_ACTIVE_CONNECTION,
+ 		                      G_PARAM_READABLE));
+ 
++	/**
++	 * NMClient:devices:
++	 *
++	 * List of known network devices.
++	 *
++	 * Since: 0.9.10
++	 **/
++	g_object_class_install_property
++		(object_class, PROP_DEVICES,
++		 g_param_spec_boxed (NM_CLIENT_DEVICES,
++		                     "Devices",
++		                     "Devices",
++		                     NM_TYPE_OBJECT_ARRAY,
++		                     G_PARAM_READABLE));
++
+ 	/* signals */
+ 
+ 	/**
+diff --git a/libnm-glib/nm-client.h b/libnm-glib/nm-client.h
+index 70bd4c1..34210a7 100644
+--- a/libnm-glib/nm-client.h
++++ b/libnm-glib/nm-client.h
+@@ -58,6 +58,7 @@ G_BEGIN_DECLS
+ #define NM_CLIENT_CONNECTIVITY "connectivity"
+ #define NM_CLIENT_PRIMARY_CONNECTION "primary-connection"
+ #define NM_CLIENT_ACTIVATING_CONNECTION "activating-connection"
++#define NM_CLIENT_DEVICES "devices"
+ 
+ /**
+  * NMClientPermission:
+-- 
+1.8.5.3
+
+
+From 53f3b12fa8789e1f9df6baeb948e4015376f8915 Mon Sep 17 00:00:00 2001
+From: Dan Williams <dcbw@redhat.com>
+Date: Wed, 8 Jan 2014 12:30:55 -0600
+Subject: [PATCH 14/16] libnm-glib: remove unused pseudo-property code
+
+Now that all previous pseudo-properties have been converted to
+real D-Bus and GObject properties, we can remove this code.
+
+(cherry picked from commit 41aa72a86c144cc5b66bc73898739321ff531668)
+---
+ libnm-glib/nm-object-private.h |  11 --
+ libnm-glib/nm-object.c         | 230 +----------------------------------------
+ 2 files changed, 1 insertion(+), 240 deletions(-)
+
+diff --git a/libnm-glib/nm-object-private.h b/libnm-glib/nm-object-private.h
+index 171be10..3253c2e 100644
+--- a/libnm-glib/nm-object-private.h
++++ b/libnm-glib/nm-object-private.h
+@@ -59,17 +59,6 @@ gboolean _nm_object_reload_properties_finish (NMObject *object,
+                                               GAsyncResult *result,
+                                               GError **error);
+ 
+-typedef void (*NMPseudoPropertyChangedFunc) (NMObject *self, NMObject *changed);
+-void _nm_object_register_pseudo_property (NMObject *object,
+-                                          DBusGProxy *proxy,
+-                                          const char *name,
+-                                          gpointer field,
+-                                          GType object_type,
+-                                          NMPseudoPropertyChangedFunc added_func,
+-                                          NMPseudoPropertyChangedFunc removed_func);
+-void _nm_object_reload_pseudo_property   (NMObject *object,
+-                                          const char *name);
+-
+ void _nm_object_queue_notify (NMObject *object, const char *property);
+ 
+ void _nm_object_suppress_property_updates (NMObject *object, gboolean suppress);
+diff --git a/libnm-glib/nm-object.c b/libnm-glib/nm-object.c
+index 9e62ea8..3ab00cf 100644
+--- a/libnm-glib/nm-object.c
++++ b/libnm-glib/nm-object.c
+@@ -60,17 +60,6 @@ typedef struct {
+ static void reload_complete (NMObject *object);
+ 
+ typedef struct {
+-	PropertyInfo pi;
+-
+-	NMObject *self;
+-	DBusGProxy *proxy;
+-
+-	char *get_method;
+-	NMPseudoPropertyChangedFunc added_func;
+-	NMPseudoPropertyChangedFunc removed_func;
+-} PseudoPropertyInfo;
+-
+-typedef struct {
+ 	DBusGConnection *connection;
+ 	DBusGProxy *bus_proxy;
+ 	gboolean nm_running;
+@@ -79,7 +68,6 @@ typedef struct {
+ 	DBusGProxy *properties_proxy;
+ 	GSList *property_interfaces;
+ 	GSList *property_tables;
+-	GHashTable *pseudo_properties;
+ 	NMObject *parent;
+ 	gboolean suppress_property_updates;
+ 
+@@ -346,9 +334,6 @@ finalize (GObject *object)
+ 	g_slist_free (priv->property_tables);
+ 	g_free (priv->path);
+ 
+-	if (priv->pseudo_properties)
+-		g_hash_table_destroy (priv->pseudo_properties);
+-
+ 	G_OBJECT_CLASS (nm_object_parent_class)->finalize (object);
+ }
+ 
+@@ -1237,8 +1222,6 @@ _nm_object_reload_properties (NMObject *object, GError **error)
+ 	NMObjectPrivate *priv = NM_OBJECT_GET_PRIVATE (object);
+ 	GHashTable *props = NULL;
+ 	GSList *p;
+-	GHashTableIter pp;
+-	gpointer name, info;
+ 
+ 	if (!priv->property_interfaces || !priv->nm_running)
+ 		return TRUE;
+@@ -1255,12 +1238,6 @@ _nm_object_reload_properties (NMObject *object, GError **error)
+ 		g_hash_table_destroy (props);
+ 	}
+ 
+-	if (priv->pseudo_properties) {
+-		g_hash_table_iter_init (&pp, priv->pseudo_properties);
+-		while (g_hash_table_iter_next (&pp, &name, &info))
+-			_nm_object_reload_pseudo_property (object, name);
+-	}
+-
+ 	return TRUE;
+ }
+ 
+@@ -1361,166 +1338,6 @@ _nm_object_set_property (NMObject *object,
+ }
+ 
+ static void
+-pseudo_property_object_created (GObject *obj, const char *path, gpointer user_data)
+-{
+-	PseudoPropertyInfo *ppi = user_data;
+-
+-	if (obj) {
+-		GPtrArray **list_p = (GPtrArray **)ppi->pi.field;
+-
+-		if (!*list_p)
+-			*list_p = g_ptr_array_new ();
+-		add_to_object_array_unique (*list_p, obj);
+-		ppi->added_func (ppi->self, NM_OBJECT (obj));
+-	}
+-}
+-
+-static void
+-pseudo_property_added (DBusGProxy *proxy, const char *path, gpointer user_data)
+-{
+-	PseudoPropertyInfo *ppi = user_data;
+-	NMObjectPrivate *priv = NM_OBJECT_GET_PRIVATE (ppi->self);
+-	NMObject *obj;
+-
+-	if (priv->suppress_property_updates)
+-		return;
+-
+-	obj = _nm_object_cache_get (path);
+-	if (obj)
+-		pseudo_property_object_created (G_OBJECT (obj), path, ppi);
+-	else {
+-		_nm_object_create_async (ppi->pi.object_type, priv->connection, path,
+-		                         pseudo_property_object_created, ppi);
+-	}
+-}
+-
+-static void
+-pseudo_property_removed (DBusGProxy *proxy, const char *path, gpointer user_data)
+-{
+-	PseudoPropertyInfo *ppi = user_data;
+-	NMObjectPrivate *priv = NM_OBJECT_GET_PRIVATE (ppi->self);
+-	GPtrArray *list = *(GPtrArray **)ppi->pi.field;
+-	NMObject *obj = NULL;
+-	int i;
+-
+-	if (!list || priv->suppress_property_updates)
+-		return;
+-
+-	for (i = 0; i < list->len; i++) {
+-		obj = list->pdata[i];
+-		if (!strcmp (path, nm_object_get_path (obj))) {
+-			g_ptr_array_remove_index (list, i);
+-			ppi->removed_func (ppi->self, obj);
+-			g_object_unref (obj);
+-			return;
+-		}
+-	}
+-}
+-
+-static void
+-free_pseudo_property (PseudoPropertyInfo *ppi)
+-{
+-	g_object_unref (ppi->proxy);
+-	g_free (ppi->get_method);
+-	g_slice_free (PseudoPropertyInfo, ppi);
+-}
+-
+-void
+-_nm_object_register_pseudo_property (NMObject *object,
+-                                     DBusGProxy *proxy,
+-                                     const char *name,
+-                                     gpointer field,
+-                                     GType object_type,
+-                                     NMPseudoPropertyChangedFunc added_func,
+-                                     NMPseudoPropertyChangedFunc removed_func)
+-{
+-	NMObjectPrivate *priv = NM_OBJECT_GET_PRIVATE (object);
+-	PseudoPropertyInfo *ppi;
+-	int basename_len;
+-	char *added_signal, *removed_signal;
+-
+-	g_return_if_fail (NM_IS_OBJECT (object));
+-	g_return_if_fail (proxy != NULL);
+-
+-	ppi = g_slice_new0 (PseudoPropertyInfo);
+-	ppi->pi.field = field;
+-	ppi->pi.object_type = object_type;
+-	ppi->self = object;
+-	ppi->proxy = g_object_ref (proxy);
+-	ppi->added_func = added_func;
+-	ppi->removed_func = removed_func;
+-
+-	basename_len = strlen (name);
+-	if (basename_len > 4 && !strcmp (name + basename_len - 4, "List"))
+-		basename_len -= 4;
+-	else if (basename_len > 1 && name[basename_len - 1] == 's')
+-		basename_len--;
+-	else
+-		g_assert_not_reached ();
+-
+-	ppi->get_method = g_strdup_printf ("Get%s", name);
+-	added_signal = g_strdup_printf ("%.*sAdded", basename_len, name);
+-	removed_signal = g_strdup_printf ("%.*sRemoved", basename_len, name);
+-
+-	if (!priv->pseudo_properties) {
+-		priv->pseudo_properties = g_hash_table_new_full (g_str_hash, g_str_equal,
+-		                                                 g_free, (GDestroyNotify) free_pseudo_property);
+-	}
+-	g_hash_table_insert (priv->pseudo_properties, g_strdup (name), ppi);
+-
+-	dbus_g_proxy_add_signal (proxy, added_signal,
+-	                         DBUS_TYPE_G_OBJECT_PATH,
+-	                         G_TYPE_INVALID);
+-	dbus_g_proxy_connect_signal (proxy, added_signal,
+-	                             G_CALLBACK (pseudo_property_added),
+-	                             ppi, NULL);
+-
+-	dbus_g_proxy_add_signal (proxy, removed_signal,
+-	                         DBUS_TYPE_G_OBJECT_PATH,
+-	                         G_TYPE_INVALID);
+-	dbus_g_proxy_connect_signal (proxy, removed_signal,
+-	                             G_CALLBACK (pseudo_property_removed),
+-	                             ppi, NULL);
+-
+-	g_free (added_signal);
+-	g_free (removed_signal);
+-}
+-
+-void
+-_nm_object_reload_pseudo_property (NMObject *object,
+-                                   const char *name)
+-{
+-	NMObjectPrivate *priv = NM_OBJECT_GET_PRIVATE (object);
+-	PseudoPropertyInfo *ppi;
+-	GPtrArray *temp;
+-	GError *error = NULL;
+-	GValue value = G_VALUE_INIT;
+-
+-	g_return_if_fail (NM_IS_OBJECT (object));
+-	g_return_if_fail (name != NULL);
+-
+-	if (!NM_OBJECT_GET_PRIVATE (object)->nm_running)
+-		return;
+-
+-	ppi = g_hash_table_lookup (priv->pseudo_properties, name);
+-	g_return_if_fail (ppi != NULL);
+-
+-	if (!dbus_g_proxy_call (ppi->proxy, ppi->get_method, &error,
+-	                        G_TYPE_INVALID,
+-	                        DBUS_TYPE_G_ARRAY_OF_OBJECT_PATH, &temp,
+-	                        G_TYPE_INVALID)) {
+-		g_warning ("%s: error calling %s: %s", __func__, ppi->get_method, error->message);
+-		g_error_free (error);
+-		return;
+-	}
+-
+-	g_value_init (&value, DBUS_TYPE_G_ARRAY_OF_OBJECT_PATH);
+-	g_value_take_boxed (&value, temp);
+-	handle_object_array_property (object, NULL, &value, &ppi->pi, TRUE);
+-	g_value_unset (&value);
+-}
+-
+-static void
+ reload_complete (NMObject *object)
+ {
+ 	NMObjectPrivate *priv = NM_OBJECT_GET_PRIVATE (object);
+@@ -1573,36 +1390,6 @@ reload_got_properties (DBusGProxy *proxy, DBusGProxyCall *call,
+ 		reload_complete (object);
+ }
+ 
+-static void
+-reload_got_pseudo_property (DBusGProxy *proxy, DBusGProxyCall *call,
+-                            gpointer user_data)
+-{
+-	PseudoPropertyInfo *ppi = user_data;
+-	NMObject *object = ppi->self;
+-	NMObjectPrivate *priv = NM_OBJECT_GET_PRIVATE (object);
+-	GPtrArray *temp;
+-	GValue value = G_VALUE_INIT;
+-	GError *error = NULL;
+-
+-	if (dbus_g_proxy_end_call (proxy, call, &error,
+-	                           DBUS_TYPE_G_ARRAY_OF_OBJECT_PATH, &temp,
+-	                           G_TYPE_INVALID)) {
+-		g_value_init (&value, DBUS_TYPE_G_ARRAY_OF_OBJECT_PATH);
+-		g_value_take_boxed (&value, temp);
+-		if (!priv->suppress_property_updates)
+-			handle_object_array_property (object, NULL, &value, &ppi->pi, FALSE);
+-		g_value_unset (&value);
+-	} else {
+-		if (priv->reload_error)
+-			g_error_free (error);
+-		else
+-			priv->reload_error = error;
+-	}
+-
+-	if (--priv->reload_remaining == 0)
+-		reload_complete (object);
+-}
+-
+ void
+ _nm_object_reload_properties_async (NMObject *object, GAsyncReadyCallback callback, gpointer user_data)
+ {
+@@ -1613,7 +1400,7 @@ _nm_object_reload_properties_async (NMObject *object, GAsyncReadyCallback callba
+ 	simple = g_simple_async_result_new (G_OBJECT (object), callback,
+ 	                                    user_data, _nm_object_reload_properties_async);
+ 
+-	if (!priv->property_interfaces && !priv->pseudo_properties) {
++	if (!priv->property_interfaces) {
+ 		g_simple_async_result_complete_in_idle (simple);
+ 		g_object_unref (simple);
+ 		return;
+@@ -1635,21 +1422,6 @@ _nm_object_reload_properties_async (NMObject *object, GAsyncReadyCallback callba
+ 		                         G_TYPE_STRING, p->data,
+ 		                         G_TYPE_INVALID);
+ 	}
+-
+-	if (priv->pseudo_properties) {
+-		GHashTableIter iter;
+-		gpointer key, value;
+-		PseudoPropertyInfo *ppi;
+-
+-		g_hash_table_iter_init (&iter, priv->pseudo_properties);
+-		while (g_hash_table_iter_next (&iter, &key, &value)) {
+-			ppi = value;
+-			priv->reload_remaining++;
+-			dbus_g_proxy_begin_call (ppi->proxy, ppi->get_method,
+-			                         reload_got_pseudo_property, ppi, NULL,
+-			                         G_TYPE_INVALID);
+-		}
+-	}
+ }
+ 
+ gboolean
+-- 
+1.8.5.3
+
+
+From dd462bcb14b021ecbe70b52da957375b555c83a1 Mon Sep 17 00:00:00 2001
+From: Dan Williams <dcbw@redhat.com>
+Date: Thu, 9 Jan 2014 15:19:07 -0600
+Subject: [PATCH 15/16] libnm-glib: add testing framework and testcases
+
+Add a fake NM service and test various aspects of the new NM D-Bus
+properties.
+
+(cherry picked from commit bce1fc7c3b99ba6671ec2dbb5449662c4d191bdf)
+---
+ libnm-glib/tests/Makefile.am      |  26 +-
+ libnm-glib/tests/test-fake-nm.py  | 776 +++++++++++++++++++++++++++++++
+ libnm-glib/tests/test-nm-client.c | 951 ++++++++++++++++++++++++++++++++++++++
+ 3 files changed, 1749 insertions(+), 4 deletions(-)
+ create mode 100755 libnm-glib/tests/test-fake-nm.py
+ create mode 100644 libnm-glib/tests/test-nm-client.c
+
+diff --git a/libnm-glib/tests/Makefile.am b/libnm-glib/tests/Makefile.am
+index ebad96f..5f002cb 100644
+--- a/libnm-glib/tests/Makefile.am
++++ b/libnm-glib/tests/Makefile.am
+@@ -9,7 +9,18 @@ AM_CPPFLAGS = \
+ 	$(GLIB_CFLAGS) \
+ 	$(DBUS_CFLAGS)
+ 
+-noinst_PROGRAMS = test-remote-settings-client
++noinst_PROGRAMS = test-nm-client test-remote-settings-client
++
++####### NMClient and non-settings tests #######
++
++test_nm_client_SOURCES = \
++	test-nm-client.c
++
++test_nm_client_LDADD = \
++	$(top_builddir)/libnm-util/libnm-util.la \
++	$(top_builddir)/libnm-glib/libnm-glib-test.la \
++	$(GLIB_LIBS) \
++	$(DBUS_LIBS)
+ 
+ ####### remote settings client test #######
+ 
+@@ -24,11 +35,18 @@ test_remote_settings_client_LDADD = \
+ 
+ ###########################################
+ 
++TEST_NM_BIN = test-fake-nm.py
+ TEST_RSS_BIN = test-remote-settings-service.py
+ 
+-EXTRA_DIST = $(TEST_RSS_BIN)
++EXTRA_DIST = $(TEST_RSS_BIN) $(TEST_NM_BIN)
+ 
+-check-local: test-remote-settings-client
+-	$(abs_builddir)/test-remote-settings-client $(abs_srcdir) $(TEST_RSS_BIN)
++check-local: test-nm-client test-remote-settings-client
++	if test -z "$$DBUS_SESSION_BUS_ADDRESS" ; then \
++	    dbus-launch --exit-with-session $(abs_builddir)/test-nm-client $(abs_srcdir) $(TEST_NM_BIN); \
++	    dbus-launch --exit-with-session $(abs_builddir)/test-remote-settings-client $(abs_srcdir) $(TEST_RSS_BIN); \
++	else \
++	    $(abs_builddir)/test-nm-client $(abs_srcdir) $(TEST_NM_BIN); \
++	    $(abs_builddir)/test-remote-settings-client $(abs_srcdir) $(TEST_RSS_BIN); \
++	fi;
+ 
+ endif
+diff --git a/libnm-glib/tests/test-fake-nm.py b/libnm-glib/tests/test-fake-nm.py
+new file mode 100755
+index 0000000..46ca3ff
+--- /dev/null
++++ b/libnm-glib/tests/test-fake-nm.py
+@@ -0,0 +1,776 @@
++#!/usr/bin/env python
++# -*- Mode: python; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*-
++
++from __future__ import print_function
++
++from gi.repository import GLib, GObject
++import sys
++import dbus
++import dbus.service
++import dbus.mainloop.glib
++import random
++
++mainloop = GObject.MainLoop()
++quit_id = 0
++
++# NM State
++NM_STATE_UNKNOWN          = 0
++NM_STATE_ASLEEP           = 10
++NM_STATE_DISCONNECTED     = 20
++NM_STATE_DISCONNECTING    = 30
++NM_STATE_CONNECTING       = 40
++NM_STATE_CONNECTED_LOCAL  = 50
++NM_STATE_CONNECTED_SITE   = 60
++NM_STATE_CONNECTED_GLOBAL = 70
++
++# Device state
++NM_DEVICE_STATE_UNKNOWN      = 0
++NM_DEVICE_STATE_UNMANAGED    = 10
++NM_DEVICE_STATE_UNAVAILABLE  = 20
++NM_DEVICE_STATE_DISCONNECTED = 30
++NM_DEVICE_STATE_PREPARE      = 40
++NM_DEVICE_STATE_CONFIG       = 50
++NM_DEVICE_STATE_NEED_AUTH    = 60
++NM_DEVICE_STATE_IP_CONFIG    = 70
++NM_DEVICE_STATE_IP_CHECK     = 80
++NM_DEVICE_STATE_SECONDARIES  = 90
++NM_DEVICE_STATE_ACTIVATED    = 100
++NM_DEVICE_STATE_DEACTIVATING = 110
++NM_DEVICE_STATE_FAILED       = 120
++
++NM_DEVICE_TYPE_UNKNOWN    = 0
++NM_DEVICE_TYPE_ETHERNET   = 1
++NM_DEVICE_TYPE_WIFI       = 2
++NM_DEVICE_TYPE_UNUSED1    = 3
++NM_DEVICE_TYPE_UNUSED2    = 4
++NM_DEVICE_TYPE_BT         = 5
++NM_DEVICE_TYPE_OLPC_MESH  = 6
++NM_DEVICE_TYPE_WIMAX      = 7
++NM_DEVICE_TYPE_MODEM      = 8
++NM_DEVICE_TYPE_INFINIBAND = 9
++NM_DEVICE_TYPE_BOND       = 10
++NM_DEVICE_TYPE_VLAN       = 11
++NM_DEVICE_TYPE_ADSL       = 12
++NM_DEVICE_TYPE_BRIDGE     = 13
++NM_DEVICE_TYPE_GENERIC    = 14
++NM_DEVICE_TYPE_TEAM       = 15
++
++#########################################################
++IFACE_DBUS = 'org.freedesktop.DBus'
++
++class UnknownInterfaceException(dbus.DBusException):
++    _dbus_error_name = IFACE_DBUS + '.UnknownInterface'
++
++class UnknownPropertyException(dbus.DBusException):
++    _dbus_error_name = IFACE_DBUS + '.UnknownProperty'
++
++def to_path_array(src):
++    array = dbus.Array([], signature=dbus.Signature('o'))
++    for o in src:
++        array.append(o.path)
++    return array
++
++def to_path(src):
++    if src:
++        return dbus.ObjectPath(src.path)
++    return dbus.ObjectPath("/")
++
++class ExportedObj(dbus.service.Object):
++    def __init__(self, bus, object_path):
++        dbus.service.Object.__init__(self, bus, object_path)
++        self._bus = bus
++        self.path = object_path
++        self.__dbus_ifaces = {}
++
++    def add_dbus_interface(self, dbus_iface, get_props_func):
++        self.__dbus_ifaces[dbus_iface] = get_props_func
++
++    def _get_dbus_properties(self, iface):
++        return self.__dbus_ifaces[iface]()
++
++    @dbus.service.method(dbus_interface=dbus.PROPERTIES_IFACE, in_signature='s', out_signature='a{sv}')
++    def GetAll(self, iface):
++        if iface not in self.__dbus_ifaces.keys():
++            raise UnknownInterfaceException()
++        return self._get_dbus_properties(iface)
++
++    @dbus.service.method(dbus_interface=dbus.PROPERTIES_IFACE, in_signature='ss', out_signature='v')
++    def Get(self, iface, name):
++        if iface not in self.__dbus_ifaces.keys():
++            raise UnknownInterfaceException()
++        props = self._get_dbus_properties(iface)
++        if not name in props.keys():
++            raise UnknownPropertyException()
++        return props[name]
++
++###################################################################
++IFACE_DEVICE = 'org.freedesktop.NetworkManager.Device'
++
++PD_UDI = "Udi"
++PD_IFACE = "Interface"
++PD_DRIVER = "Driver"
++PD_STATE = "State"
++PD_ACTIVE_CONNECTION = "ActiveConnection"
++PD_IP4_CONFIG = "Ip4Config"
++PD_IP6_CONFIG = "Ip6Config"
++PD_DHCP4_CONFIG = "Dhcp4Config"
++PD_DHCP6_CONFIG = "Dhcp6Config"
++PD_MANAGED = "Managed"
++PD_AUTOCONNECT = "Autoconnect"
++PD_DEVICE_TYPE = "DeviceType"
++PD_AVAILABLE_CONNECTIONS = "AvailableConnections"
++
++class Device(ExportedObj):
++    counter = 1
++
++    def __init__(self, bus, iface, devtype):
++        object_path = "/org/freedesktop/NetworkManager/Devices/%d" % Device.counter
++        Device.counter = Device.counter + 1
++        ExportedObj.__init__(self, bus, object_path)
++        self.add_dbus_interface(IFACE_DEVICE, self.__get_props)
++
++        self.iface = iface
++        self.udi = "/sys/devices/virtual/%s" % iface
++        self.devtype = devtype
++        self.active_connection = None
++        self.state = NM_DEVICE_STATE_UNAVAILABLE
++        self.ip4_config = None
++        self.ip6_config = None
++        self.dhcp4_config = None
++        self.dhcp6_config = None
++        self.available_connections = []
++
++    # Properties interface
++    def __get_props(self):
++        props = {}
++        props[PD_UDI] = self.udi
++        props[PD_IFACE] = self.iface
++        props[PD_DRIVER] = "virtual"
++        props[PD_STATE] = dbus.UInt32(self.state)
++        props[PD_ACTIVE_CONNECTION] = to_path(self.active_connection)
++        props[PD_IP4_CONFIG] = to_path(self.ip4_config)
++        props[PD_IP6_CONFIG] = to_path(self.ip6_config)
++        props[PD_DHCP4_CONFIG] = to_path(self.dhcp4_config)
++        props[PD_DHCP6_CONFIG] = to_path(self.dhcp6_config)
++        props[PD_MANAGED] = True
++        props[PD_AUTOCONNECT] = True
++        props[PD_DEVICE_TYPE] = dbus.UInt32(self.devtype)
++        props[PD_AVAILABLE_CONNECTIONS] = to_path_array(self.available_connections)
++        return props
++
++    # methods
++    @dbus.service.method(dbus_interface=IFACE_DEVICE, in_signature='', out_signature='')
++    def Disconnect(self):
++        pass
++
++    def __notify(self, propname):
++        props = self._get_dbus_properties(IFACE_DEVICE)
++        changed = { propname: props[propname] }
++        Device.PropertiesChanged(self, changed)
++
++    @dbus.service.signal(IFACE_DEVICE, signature='a{sv}')
++    def PropertiesChanged(self, changed):
++        pass
++
++
++###################################################################
++
++def random_mac():
++    return '%02X:%02X:%02X:%02X:%02X:%02X' % (
++        random.randint(0, 255), random.randint(0, 255), random.randint(0, 255),
++        random.randint(0, 255), random.randint(0, 255), random.randint(0, 255)
++      )
++
++###################################################################
++IFACE_WIRED = 'org.freedesktop.NetworkManager.Device.Wired'
++
++PE_HW_ADDRESS = "HwAddress"
++PE_PERM_HW_ADDRESS = "PermHwAddress"
++PE_SPEED = "Speed"
++PE_CARRIER = "Carrier"
++
++class WiredDevice(Device):
++    def __init__(self, bus, iface):
++        Device.__init__(self, bus, iface, NM_DEVICE_TYPE_ETHERNET)
++        self.add_dbus_interface(IFACE_WIRED, self.__get_props)
++
++        self.mac = random_mac()
++        self.carrier = False
++
++    # Properties interface
++    def __get_props(self):
++        props = {}
++        props[PE_HW_ADDRESS] = self.mac
++        props[PE_PERM_HW_ADDRESS] = self.mac
++        props[PE_SPEED] = dbus.UInt32(100)
++        props[PE_CARRIER] = self.carrier
++        return props
++
++    def __notify(self, propname):
++        props = self._get_dbus_properties(IFACE_WIRED)
++        changed = { propname: props[propname] }
++        WiredDevice.PropertiesChanged(self, changed)
++
++    @dbus.service.signal(IFACE_WIRED, signature='a{sv}')
++    def PropertiesChanged(self, changed):
++        pass
++
++###################################################################
++IFACE_WIFI_AP = 'org.freedesktop.NetworkManager.AccessPoint'
++
++PP_FLAGS = "Flags"
++PP_WPA_FLAGS = "WpaFlags"
++PP_RSN_FLAGS = "RsnFlags"
++PP_SSID = "Ssid"
++PP_FREQUENCY = "Frequency"
++PP_HW_ADDRESS = "HwAddress"
++PP_MODE = "Mode"
++PP_MAX_BITRATE = "MaxBitrate"
++PP_STRENGTH = "Strength"
++
++class WifiAp(ExportedObj):
++    counter = 0
++
++    def __init__(self, bus, ssid, mac, flags, wpaf, rsnf, freq):
++        path = "/org/freedesktop/NetworkManager/AccessPoint/%d" % WifiAp.counter
++        WifiAp.counter = WifiAp.counter + 1
++        ExportedObj.__init__(self, bus, path)
++        self.add_dbus_interface(IFACE_WIFI_AP, self.__get_props)
++
++        self.ssid = ssid
++        if mac:
++            self.bssid = mac
++        else:
++            self.bssid = random_mac()
++        self.flags = flags
++        self.wpaf = wpaf
++        self.rsnf = rsnf
++        self.freq = freq
++        self.strength = random.randint(0, 100)
++        self.strength_id = GLib.timeout_add_seconds(10, self.strength_cb, None)
++
++    def __del__(self):
++        if self.strength_id > 0:
++            GLib.source_remove(self.strength_id)
++        self.strength_id = 0
++
++    def strength_cb(self, ignored):
++        self.strength = random.randint(0, 100)
++        self.__notify(PP_STRENGTH)
++        return True
++
++    # Properties interface
++    def __get_props(self):
++        props = {}
++        props[PP_FLAGS] = dbus.UInt32(self.flags)
++        props[PP_WPA_FLAGS] = dbus.UInt32(self.wpaf)
++        props[PP_RSN_FLAGS] = dbus.UInt32(self.rsnf)
++        props[PP_SSID] = dbus.ByteArray(self.ssid)
++        props[PP_FREQUENCY] = dbus.UInt32(self.freq)
++        props[PP_HW_ADDRESS] = self.bssid
++        props[PP_MODE] = dbus.UInt32(2)  # NM_802_11_MODE_INFRA
++        props[PP_MAX_BITRATE] = dbus.UInt32(54000)
++        props[PP_STRENGTH] = dbus.Byte(self.strength)
++        return props
++
++    def __notify(self, propname):
++        props = self._get_dbus_properties(IFACE_WIFI_AP)
++        changed = { propname: props[propname] }
++        WifiAp.PropertiesChanged(self, changed)
++
++    @dbus.service.signal(IFACE_WIFI_AP, signature='a{sv}')
++    def PropertiesChanged(self, changed):
++        pass
++
++###################################################################
++IFACE_WIFI = 'org.freedesktop.NetworkManager.Device.Wireless'
++
++class ApNotFoundException(dbus.DBusException):
++    _dbus_error_name = IFACE_WIFI + '.AccessPointNotFound'
++
++PW_HW_ADDRESS = "HwAddress"
++PW_PERM_HW_ADDRESS = "PermHwAddress"
++PW_MODE = "Mode"
++PW_BITRATE = "Bitrate"
++PW_ACCESS_POINTS = "AccessPoints"
++PW_ACTIVE_ACCESS_POINT = "ActiveAccessPoint"
++PW_WIRELESS_CAPABILITIES = "WirelessCapabilities"
++
++class WifiDevice(Device):
++    def __init__(self, bus, iface):
++        Device.__init__(self, bus, iface, NM_DEVICE_TYPE_WIFI)
++        self.add_dbus_interface(IFACE_WIFI, self.__get_props)
++
++        self.mac = random_mac()
++        self.aps = []
++        self.active_ap = None
++
++    # methods
++    @dbus.service.method(dbus_interface=IFACE_WIFI, in_signature='', out_signature='ao')
++    def GetAccessPoints(self):
++        # only include non-hidden APs
++        array = []
++        for a in self.aps:
++            if a.ssid():
++                array.append(a)
++        return to_path_array(array)
++
++    @dbus.service.method(dbus_interface=IFACE_WIFI, in_signature='', out_signature='ao')
++    def GetAllAccessPoints(self):
++        # include all APs including hidden ones
++        return to_path_array(self.aps)
++
++    @dbus.service.method(dbus_interface=IFACE_WIFI, in_signature='a{sv}', out_signature='')
++    def RequestScan(self, props):
++        pass
++
++    @dbus.service.signal(IFACE_WIFI, signature='o')
++    def AccessPointAdded(self, ap_path):
++        pass
++
++    def add_ap(self, ap):
++        self.aps.append(ap)
++        self.__notify(PW_ACCESS_POINTS)
++        self.AccessPointAdded(to_path(ap))
++
++    @dbus.service.signal(IFACE_WIFI, signature='o')
++    def AccessPointRemoved(self, ap_path):
++        pass
++
++    def remove_ap(self, ap):
++        self.aps.remove(ap)
++        self.__notify(PW_ACCESS_POINTS)
++        self.AccessPointRemoved(to_path(ap))
++
++    # Properties interface
++    def __get_props(self):
++        props = {}
++        props[PW_HW_ADDRESS] = self.mac
++        props[PW_PERM_HW_ADDRESS] = self.mac
++        props[PW_MODE] = dbus.UInt32(3)  # NM_802_11_MODE_INFRA
++        props[PW_BITRATE] = dbus.UInt32(21000)
++        props[PW_WIRELESS_CAPABILITIES] = dbus.UInt32(0xFF)
++        props[PW_ACCESS_POINTS] = to_path_array(self.aps)
++        props[PW_ACTIVE_ACCESS_POINT] = to_path(self.active_ap)
++        return props
++
++    def __notify(self, propname):
++        props = self._get_dbus_properties(IFACE_WIFI)
++        changed = { propname: props[propname] }
++        WifiDevice.PropertiesChanged(self, changed)
++
++    @dbus.service.signal(IFACE_WIFI, signature='a{sv}')
++    def PropertiesChanged(self, changed):
++        pass
++
++    # test functions
++    def add_test_ap(self, ssid, mac):
++        ap = WifiAp(self._bus, ssid, mac, 0x1, 0x1cc, 0x1cc, 2412)
++        self.add_ap(ap)
++        return ap.path
++
++    def remove_ap_by_path(self, path):
++        for ap in self.aps:
++            if ap.path == path:
++                self.remove_ap(ap)
++                return
++        raise ApNotFoundException("AP %s not found" % path)
++
++
++###################################################################
++IFACE_WIMAX_NSP = 'org.freedesktop.NetworkManager.WiMax.Nsp'
++
++PN_NAME = "Name"
++PN_SIGNAL_QUALITY = "SignalQuality"
++PN_NETWORK_TYPE = "NetworkType"
++
++class WimaxNsp(ExportedObj):
++    counter = 0
++
++    def __init__(self, bus, name):
++        path = "/org/freedesktop/NetworkManager/Nsp/%d" % WimaxNsp.counter
++        WimaxNsp.counter = WimaxNsp.counter + 1
++        ExportedObj.__init__(self, bus, path)
++        self.add_dbus_interface(IFACE_WIMAX_NSP, self.__get_props)
++
++        self.name = name
++        self.strength = random.randint(0, 100)
++        self.strength_id = GLib.timeout_add_seconds(10, self.strength_cb, None)
++
++    def __del__(self):
++        if self.strength_id > 0:
++            GLib.source_remove(self.strength_id)
++        self.strength_id = 0
++
++    def strength_cb(self, ignored):
++        self.strength = random.randint(0, 100)
++        self.__notify(PN_SIGNAL_QUALITY)
++        return True
++
++    # Properties interface
++    def __get_props(self):
++        props = {}
++        props[PN_NAME] = self.name
++        props[PN_SIGNAL_QUALITY] = dbus.UInt32(self.strength)
++        props[PN_NETWORK_TYPE] = dbus.UInt32(0x1)  # NM_WIMAX_NSP_NETWORK_TYPE_HOME
++        return props
++
++    def __notify(self, propname):
++        props = self._get_dbus_properties(IFACE_WIMAX_NSP)
++        changed = { propname: props[propname] }
++        WimaxNsp.PropertiesChanged(self, changed)
++
++    @dbus.service.signal(IFACE_WIMAX_NSP, signature='a{sv}')
++    def PropertiesChanged(self, changed):
++        pass
++
++###################################################################
++IFACE_WIMAX = 'org.freedesktop.NetworkManager.Device.WiMax'
++
++class NspNotFoundException(dbus.DBusException):
++    _dbus_error_name = IFACE_WIMAX + '.NspNotFound'
++
++PX_NSPS = "Nsps"
++PX_HW_ADDRESS = "HwAddress"
++PX_CENTER_FREQUENCY = "CenterFrequency"
++PX_RSSI = "Rssi"
++PX_CINR = "Cinr"
++PX_TX_POWER = "TxPower"
++PX_BSID = "Bsid"
++PX_ACTIVE_NSP = "ActiveNsp"
++
++class WimaxDevice(Device):
++    def __init__(self, bus, iface):
++        Device.__init__(self, bus, iface, NM_DEVICE_TYPE_WIMAX)
++        self.add_dbus_interface(IFACE_WIMAX, self.__get_props)
++
++        self.mac = random_mac()
++        self.bsid = random_mac()
++        self.nsps = []
++        self.active_nsp = None
++
++    # methods
++    @dbus.service.method(dbus_interface=IFACE_WIMAX, in_signature='', out_signature='ao')
++    def GetNspList(self):
++        # include all APs including hidden ones
++        return to_path_array(self.nsps)
++
++    @dbus.service.signal(IFACE_WIMAX, signature='o')
++    def NspAdded(self, nsp_path):
++        pass
++
++    def add_nsp(self, nsp):
++        self.nsps.append(nsp)
++        self.__notify(PX_NSPS)
++        self.NspAdded(to_path(nsp))
++
++    @dbus.service.signal(IFACE_WIMAX, signature='o')
++    def NspRemoved(self, nsp_path):
++        pass
++
++    def remove_nsp(self, nsp):
++        self.nsps.remove(nsp)
++        self.__notify(PX_NSPS)
++        self.NspRemoved(to_path(nsp))
++
++    # Properties interface
++    def __get_props(self):
++        props = {}
++        props[PX_HW_ADDRESS] = self.mac
++        props[PX_CENTER_FREQUENCY] = dbus.UInt32(2525)
++        props[PX_RSSI] = dbus.Int32(-48)
++        props[PX_CINR] = dbus.Int32(24)
++        props[PX_TX_POWER] = dbus.Int32(9)
++        props[PX_BSID] = self.bsid
++        props[PX_NSPS] = to_path_array(self.nsps)
++        props[PX_ACTIVE_NSP] = to_path(self.active_nsp)
++        return props
++
++    def __notify(self, propname):
++        props = self._get_dbus_properties(IFACE_WIMAX)
++        changed = { propname: props[propname] }
++        WimaxDevice.PropertiesChanged(self, changed)
++
++    @dbus.service.signal(IFACE_WIMAX, signature='a{sv}')
++    def PropertiesChanged(self, changed):
++        pass
++
++    # test functions
++    def add_test_nsp(self, name):
++        nsp = WimaxNsp(self._bus, name)
++        self.add_nsp(nsp)
++        return nsp.path
++
++    def remove_nsp_by_path(self, path):
++        for nsp in self.nsps:
++            if nsp.path == path:
++                self.remove_nsp(nsp)
++                return
++        raise NspNotFoundException("NSP %s not found" % path)
++
++###################################################################
++IFACE_TEST = 'org.freedesktop.NetworkManager.LibnmGlibTest'
++IFACE_NM = 'org.freedesktop.NetworkManager'
++
++class PermissionDeniedException(dbus.DBusException):
++    _dbus_error_name = IFACE_NM + '.PermissionDenied'
++
++class UnknownDeviceException(dbus.DBusException):
++    _dbus_error_name = IFACE_NM + '.UnknownDevice'
++
++PM_DEVICES = 'Devices'
++PM_NETWORKING_ENABLED = 'NetworkingEnabled'
++PM_WWAN_ENABLED = 'WwanEnabled'
++PM_WWAN_HARDWARE_ENABLED = 'WwanHardwareEnabled'
++PM_WIRELESS_ENABLED = 'WirelessEnabled'
++PM_WIRELESS_HARDWARE_ENABLED = 'WirelessHardwareEnabled'
++PM_WIMAX_ENABLED = 'WimaxEnabled'
++PM_WIMAX_HARDWARE_ENABLED = 'WimaxHardwareEnabled'
++PM_ACTIVE_CONNECTIONS = 'ActiveConnections'
++PM_PRIMARY_CONNECTION = 'PrimaryConnection'
++PM_ACTIVATING_CONNECTION = 'ActivatingConnection'
++PM_STARTUP = 'Startup'
++PM_STATE = 'State'
++PM_VERSION = 'Version'
++PM_CONNECTIVITY = 'Connectivity'
++
++class NetworkManager(ExportedObj):
++    def __init__(self, bus, object_path):
++        ExportedObj.__init__(self, bus, object_path)
++        self.add_dbus_interface(IFACE_NM, self.__get_props)
++
++        self.devices = []
++        self.active_connections = []
++        self.primary_connection = None
++        self.activating_connection = None
++        self.state = NM_STATE_DISCONNECTED
++        self.connectivity = 1
++
++    @dbus.service.signal(IFACE_NM, signature='u')
++    def StateChanged(self, new_state):
++        pass
++
++    def set_state(self, new_state):
++        self.state = new_state
++        self.__notify(PM_STATE)
++        self.StateChanged(dbus.UInt32(self.state))
++
++    @dbus.service.method(dbus_interface=IFACE_NM, in_signature='', out_signature='ao')
++    def GetDevices(self):
++        return self._get_dbus_properties(IFACE_NM)[PM_DEVICES]
++
++    @dbus.service.method(dbus_interface=IFACE_NM, in_signature='s', out_signature='o')
++    def GetDeviceByIpIface(self, ip_iface):
++        for d in self.devices:
++            # ignore iface/ip_iface distinction for now
++            if d.iface == ip_iface:
++                return d.path
++        raise UnknownDeviceException("No device found for the requested iface.")
++
++    @dbus.service.method(dbus_interface=IFACE_NM, in_signature='ooo', out_signature='o')
++    def ActivateConnection(self, conpath, devpath, specific_object):
++        device = None
++        for d in self.devices:
++            if d.path == devpath:
++                device = d
++                break
++        if not device:
++            raise UnknownDeviceException("No device found for the requested iface.")
++        raise PermissionDeniedException("Not yet implemented")
++
++    @dbus.service.method(dbus_interface=IFACE_NM, in_signature='a{sa{sv}}oo', out_signature='oo')
++    def AddAndActivateConnection(self, connection, devpath, specific_object):
++        device = None
++        for d in self.devices:
++            if d.path == devpath:
++                device = d
++                break
++        if not device:
++            raise UnknownDeviceException("No device found for the requested iface.")
++        raise PermissionDeniedException("Not yet implemented")
++
++    @dbus.service.method(dbus_interface=IFACE_NM, in_signature='o', out_signature='')
++    def DeactivateConnection(self, active_connection):
++        pass
++
++    @dbus.service.method(dbus_interface=IFACE_NM, in_signature='b', out_signature='')
++    def Sleep(self, do_sleep):
++        if do_sleep:
++            self.state = NM_STATE_ASLEEP
++        else:
++            self.state = NM_STATE_DISCONNECTED
++        self.__notify(PM_STATE)
++
++    @dbus.service.method(dbus_interface=IFACE_NM, in_signature='b', out_signature='')
++    def Enable(self, do_enable):
++        pass
++
++    @dbus.service.method(dbus_interface=IFACE_NM, in_signature='', out_signature='a{ss}')
++    def GetPermissions(self):
++        return { "org.freedesktop.NetworkManager.enable-disable-network":   "yes",
++                 "org.freedesktop.NetworkManager.sleep-wake":               "no",
++                 "org.freedesktop.NetworkManager.enable-disable-wifi":      "yes",
++                 "org.freedesktop.NetworkManager.enable-disable-wwan":      "yes",
++                 "org.freedesktop.NetworkManager.enable-disable-wimax":     "yes",
++                 "org.freedesktop.NetworkManager.network-control":          "yes",
++                 "org.freedesktop.NetworkManager.wifi.share.protected":     "yes",
++                 "org.freedesktop.NetworkManager.wifi.share.open":          "yes",
++                 "org.freedesktop.NetworkManager.settings.modify.own":      "yes",
++                 "org.freedesktop.NetworkManager.settings.modify.system":   "yes",
++                 "org.freedesktop.NetworkManager.settings.modify.hostname": "yes" }
++
++    @dbus.service.method(dbus_interface=IFACE_NM, in_signature='ss', out_signature='')
++    def SetLogging(self, level, domains):
++        pass
++
++    @dbus.service.method(dbus_interface=IFACE_NM, in_signature='', out_signature='ss')
++    def GetLogging(self):
++        return ("info", "HW,RFKILL,CORE,DEVICE,WIFI,ETHER")
++
++    @dbus.service.method(dbus_interface=IFACE_NM, in_signature='', out_signature='u')
++    def CheckConnectivity(self):
++        raise PermissionDeniedException("You fail")
++
++    @dbus.service.signal(IFACE_NM, signature='o')
++    def DeviceAdded(self, devpath):
++        pass
++
++    def add_device(self, device):
++        self.devices.append(device)
++        self.__notify(PM_DEVICES)
++        self.DeviceAdded(to_path(device))
++
++    @dbus.service.signal(IFACE_NM, signature='o')
++    def DeviceRemoved(self, devpath):
++        pass
++
++    def remove_device(self, device):
++        self.devices.remove(device)
++        self.__notify(PM_DEVICES)
++        self.DeviceRemoved(to_path(device))
++
++    ################# D-Bus Properties interface
++    def __get_props(self):
++        props = {}
++        props[PM_DEVICES] = to_path_array(self.devices)
++        props[PM_NETWORKING_ENABLED] = True
++        props[PM_WWAN_ENABLED] = True
++        props[PM_WWAN_HARDWARE_ENABLED] = True
++        props[PM_WIRELESS_ENABLED] = True
++        props[PM_WIRELESS_HARDWARE_ENABLED] = True
++        props[PM_WIMAX_ENABLED] = True
++        props[PM_WIMAX_HARDWARE_ENABLED] = True
++        props[PM_ACTIVE_CONNECTIONS] = to_path_array(self.active_connections)
++        props[PM_PRIMARY_CONNECTION] = to_path(self.primary_connection)
++        props[PM_ACTIVATING_CONNECTION] = to_path(self.activating_connection)
++        props[PM_STARTUP] = False
++        props[PM_STATE] = dbus.UInt32(self.state)
++        props[PM_VERSION] = "0.9.9.0"
++        props[PM_CONNECTIVITY] = dbus.UInt32(self.connectivity)
++        return props
++
++    def __notify(self, propname):
++        props = self._get_dbus_properties(IFACE_NM)
++        changed = { propname: props[propname] }
++        NetworkManager.PropertiesChanged(self, changed)
++
++    @dbus.service.signal(IFACE_NM, signature='a{sv}')
++    def PropertiesChanged(self, changed):
++        pass
++
++    ################# Testing methods
++    @dbus.service.method(IFACE_TEST, in_signature='', out_signature='')
++    def Quit(self):
++        mainloop.quit()
++
++    @dbus.service.method(IFACE_TEST, in_signature='s', out_signature='o')
++    def AddWiredDevice(self, ifname):
++        for d in self.devices:
++            if d.iface == ifname:
++                raise PermissionDeniedError("Device already added")
++        dev = WiredDevice(self._bus, ifname)
++        self.add_device(dev)
++        return dbus.ObjectPath(dev.path)
++
++    @dbus.service.method(IFACE_TEST, in_signature='s', out_signature='o')
++    def AddWifiDevice(self, ifname):
++        for d in self.devices:
++            if d.iface == ifname:
++                raise PermissionDeniedError("Device already added")
++        dev = WifiDevice(self._bus, ifname)
++        self.add_device(dev)
++        return dbus.ObjectPath(dev.path)
++
++    @dbus.service.method(IFACE_TEST, in_signature='s', out_signature='o')
++    def AddWimaxDevice(self, ifname):
++        for d in self.devices:
++            if d.iface == ifname:
++                raise PermissionDeniedError("Device already added")
++        dev = WimaxDevice(self._bus, ifname)
++        self.add_device(dev)
++        return dbus.ObjectPath(dev.path)
++
++    @dbus.service.method(IFACE_TEST, in_signature='o', out_signature='')
++    def RemoveDevice(self, path):
++        for d in self.devices:
++            if d.path == path:
++                self.remove_device(d)
++                return
++        raise UnknownDeviceException("Device not found")
++
++    @dbus.service.method(IFACE_TEST, in_signature='sss', out_signature='o')
++    def AddWifiAp(self, ifname, ssid, mac):
++        for d in self.devices:
++            if d.iface == ifname:
++                return dbus.ObjectPath(d.add_test_ap(ssid, mac))
++        raise UnknownDeviceException("Device not found")
++
++    @dbus.service.method(IFACE_TEST, in_signature='so', out_signature='')
++    def RemoveWifiAp(self, ifname, ap_path):
++        for d in self.devices:
++            if d.iface == ifname:
++                d.remove_ap_by_path(ap_path)
++                return
++        raise UnknownDeviceException("Device not found")
++
++    @dbus.service.method(IFACE_TEST, in_signature='ss', out_signature='o')
++    def AddWimaxNsp(self, ifname, name):
++        for d in self.devices:
++            if d.iface == ifname:
++                return dbus.ObjectPath(d.add_test_nsp(name))
++        raise UnknownDeviceException("Device not found")
++
++    @dbus.service.method(IFACE_TEST, in_signature='so', out_signature='')
++    def RemoveWimaxNsp(self, ifname, nsp_path):
++        for d in self.devices:
++            if d.iface == ifname:
++                d.remove_nsp_by_path(nsp_path)
++                return
++        raise UnknownDeviceException("Device not found")
++
++def quit_cb(user_data):
++    mainloop.quit()
++
++def main():
++    dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
++
++    random.seed()
++
++    bus = dbus.SessionBus()
++    nm = NetworkManager(bus, "/org/freedesktop/NetworkManager")
++    if not bus.request_name("org.freedesktop.NetworkManager"):
++        sys.exit(1)
++
++    # quit after inactivity to ensure we don't stick around if tests fail
++    quit_id = GLib.timeout_add_seconds(20, quit_cb, None)
++
++    try:
++        mainloop.run()
++    except Exception as e:
++        pass
++
++    sys.exit(0)
++
++if __name__ == '__main__':
++    main()
++
+diff --git a/libnm-glib/tests/test-nm-client.c b/libnm-glib/tests/test-nm-client.c
+new file mode 100644
+index 0000000..5bbb1cd
+--- /dev/null
++++ b/libnm-glib/tests/test-nm-client.c
+@@ -0,0 +1,951 @@
++/* -*- Mode: C; tab-width: 4; indent-tabs-mode: t; c-basic-offset: 4 -*- */
++/*
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 2, or (at your option)
++ * any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License along
++ * with this program; if not, write to the Free Software Foundation, Inc.,
++ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
++ *
++ * Copyright (C) 2010 - 2014 Red Hat, Inc.
++ *
++ */
++
++#include <dbus/dbus.h>
++#include <dbus/dbus-glib.h>
++#include <dbus/dbus-glib-lowlevel.h>
++#include <glib.h>
++#include <string.h>
++#include <sys/types.h>
++#include <signal.h>
++
++#include <NetworkManager.h>
++#include "nm-client.h"
++#include "nm-device-wifi.h"
++#include "nm-device-ethernet.h"
++#include "nm-device-wimax.h"
++#include "nm-glib-compat.h"
++
++static const char *fake_path;
++static const char *fake_bin;
++static const char *fake_exec;
++static GMainLoop *loop = NULL;
++
++/*******************************************************************/
++
++typedef struct {
++	GDBusConnection *bus;
++	GDBusProxy *proxy;
++	GPid pid;
++	NMClient *client;
++} ServiceInfo;
++
++#define test_assert(condition) \
++do { \
++	if (!G_LIKELY (condition)) \
++		service_cleanup (); \
++	g_assert (condition); \
++} while (0)
++
++#define test_assert_cmpint(a, b, c) \
++do { \
++	if (!G_LIKELY (a b c)) \
++		service_cleanup (); \
++	g_assert_cmpint (a, b, c); \
++} while (0)
++
++#define test_assert_cmpstr(a, b, c) \
++do { \
++	if (!G_LIKELY (g_str_hash (a) b g_str_hash (c))) \
++		service_cleanup (); \
++	g_assert_cmpstr (a, b, c); \
++} while (0)
++
++#define test_assert_no_error(e) \
++do { \
++	if (G_UNLIKELY (e)) \
++		service_cleanup (); \
++	g_assert_no_error (e); \
++} while (0)
++
++static ServiceInfo * sinfo_static = NULL;
++
++static void
++service_cleanup (void)
++{
++	ServiceInfo *info = sinfo_static;
++
++	sinfo_static = NULL;
++
++	if (info) {
++		if (info->proxy)
++			g_object_unref (info->proxy);
++		if (info->bus)
++			g_object_unref (info->bus);
++		if (info->client)
++			g_object_unref (info->client);
++		if (info->pid)
++			kill (info->pid, SIGTERM);
++		memset (info, 0, sizeof (*info));
++		g_free (info);
++	} else
++		g_assert_not_reached ();
++}
++
++static gboolean
++name_exists (GDBusConnection *c, const char *name)
++{
++	GVariant *reply;
++	gboolean exists = FALSE;
++
++	reply = g_dbus_connection_call_sync (c,
++	                                     DBUS_SERVICE_DBUS,
++	                                     DBUS_PATH_DBUS,
++	                                     DBUS_INTERFACE_DBUS,
++	                                     "GetNameOwner",
++	                                     g_variant_new ("(s)", name),
++	                                     NULL,
++	                                     G_DBUS_CALL_FLAGS_NO_AUTO_START,
++	                                     -1,
++	                                     NULL,
++	                                     NULL);
++	if (reply != NULL) {
++		exists = TRUE;
++		g_variant_unref (reply);
++	}
++
++	return exists;
++}
++
++static ServiceInfo *
++service_init (void)
++{
++	ServiceInfo *sinfo;
++	const char *args[2] = { fake_exec, NULL };
++	GError *error = NULL;
++	int i = 100;
++
++	g_assert (!sinfo_static);
++
++	sinfo = g_malloc0 (sizeof (*sinfo));
++
++	sinfo_static = sinfo;
++
++	sinfo->bus = g_bus_get_sync (G_BUS_TYPE_SESSION, NULL,  NULL);
++	test_assert (sinfo->bus);
++
++	if (!g_spawn_async (fake_path, (char **) args, NULL, 0, NULL, NULL, &sinfo->pid, &error))
++		test_assert_no_error (error);
++
++	/* Wait until the service is registered on the bus */
++	while (i > 0) {
++		g_usleep (G_USEC_PER_SEC / 50);
++		if (name_exists (sinfo->bus, "org.freedesktop.NetworkManager"))
++			break;
++		i--;
++	}
++	test_assert (i > 0);
++
++	/* Grab a proxy to our fake NM service to trigger tests */
++	sinfo->proxy = g_dbus_proxy_new_sync (sinfo->bus,
++	                                      G_DBUS_PROXY_FLAGS_DO_NOT_LOAD_PROPERTIES |
++	                                        G_DBUS_PROXY_FLAGS_DO_NOT_CONNECT_SIGNALS |
++	                                        G_DBUS_PROXY_FLAGS_DO_NOT_AUTO_START,
++	                                      NULL,
++	                                      NM_DBUS_SERVICE,
++	                                      NM_DBUS_PATH,
++	                                      "org.freedesktop.NetworkManager.LibnmGlibTest",
++	                                      NULL, NULL);
++	test_assert (sinfo->proxy);
++
++	sinfo->client = nm_client_new ();
++	test_assert (sinfo->client != NULL);
++
++	return sinfo;
++}
++
++static ServiceInfo *
++service_get (void)
++{
++	g_assert (sinfo_static);
++	return sinfo_static;
++}
++
++#define _sinfo (service_get ())
++
++/*******************************************************************/
++
++static gboolean
++loop_quit (gpointer user_data)
++{
++	g_main_loop_quit ((GMainLoop *) user_data);
++	return G_SOURCE_REMOVE;
++}
++
++static gboolean
++add_device (const char *method, const char *ifname, char **out_path)
++{
++	GError *error = NULL;
++	GVariant *ret;
++
++	ret = g_dbus_proxy_call_sync (_sinfo->proxy,
++	                              method,
++	                              g_variant_new ("(s)", ifname),
++	                              G_DBUS_CALL_FLAGS_NO_AUTO_START,
++	                              3000,
++	                              NULL,
++	                              &error);
++	test_assert_no_error (error);
++	test_assert (ret);
++	test_assert_cmpstr (g_variant_get_type_string (ret), ==, "(o)");
++	if (out_path)
++		g_variant_get (ret, "(o)", out_path);
++	g_variant_unref (ret);
++	return TRUE;
++}
++
++/*******************************************************************/
++
++typedef struct {
++	GMainLoop *loop;
++	gboolean signaled;
++	gboolean notified;
++	guint quit_count;
++	guint quit_id;
++} DeviceAddedInfo;
++
++static void
++device_add_check_quit (DeviceAddedInfo *info)
++{
++	info->quit_count--;
++	if (info->quit_count == 0) {
++		g_source_remove (info->quit_id);
++		info->quit_id = 0;
++		g_main_loop_quit (info->loop);
++	}
++}
++
++static void
++device_added_cb (NMClient *c,
++                 NMDevice *device,
++                 DeviceAddedInfo *info)
++{
++	test_assert (device);
++	test_assert_cmpstr (nm_device_get_iface (device), ==, "eth0");
++	info->signaled = TRUE;
++	device_add_check_quit (info);
++}
++
++static void
++devices_notify_cb (NMClient *c,
++                   GParamSpec *pspec,
++                   DeviceAddedInfo *info)
++{
++	const GPtrArray *devices;
++	NMDevice *device;
++
++	devices = nm_client_get_devices (c);
++	test_assert (devices);
++	test_assert_cmpint (devices->len, ==, 1);
++
++	device = g_ptr_array_index (devices, 0);
++	test_assert (device);
++	test_assert_cmpstr (nm_device_get_iface (device), ==, "eth0");
++
++	info->notified = TRUE;
++
++	device_add_check_quit (info);
++}
++
++static void
++test_device_added (void)
++{
++	const GPtrArray *devices;
++	NMDevice *device;
++	DeviceAddedInfo info = { loop, FALSE, FALSE, 0, 0 };
++
++	service_init ();
++
++	/* Give NMClient a chance to initialize */
++	g_timeout_add_seconds (5, loop_quit, loop);
++	g_main_loop_run (loop);
++
++	devices = nm_client_get_devices (_sinfo->client);
++	test_assert (devices == NULL);
++
++	/* Tell the test service to add a new device */
++	add_device ("AddWiredDevice", "eth0", NULL);
++
++	g_signal_connect (_sinfo->client,
++	                  "device-added",
++	                  (GCallback) device_added_cb,
++	                  &info);
++	info.quit_count++;
++
++	g_signal_connect (_sinfo->client,
++	                  "notify::devices",
++	                  (GCallback) devices_notify_cb,
++	                  &info);
++	info.quit_count++;
++
++	/* Wait for libnm-glib to find the device */
++	info.quit_id = g_timeout_add_seconds (5, loop_quit, loop);
++	g_main_loop_run (loop);
++
++	test_assert (info.signaled);
++	test_assert (info.notified);
++
++	g_signal_handlers_disconnect_by_func (_sinfo->client, device_added_cb, &info);
++	g_signal_handlers_disconnect_by_func (_sinfo->client, devices_notify_cb, &info);
++
++	devices = nm_client_get_devices (_sinfo->client);
++	test_assert (devices);
++	test_assert_cmpint (devices->len, ==, 1);
++
++	device = g_ptr_array_index (devices, 0);
++	test_assert (device);
++	test_assert_cmpstr (nm_device_get_iface (device), ==, "eth0");
++
++	service_cleanup ();
++}
++
++/*******************************************************************/
++
++static const char *expected_bssid = "66:55:44:33:22:11";
++
++typedef struct {
++	GMainLoop *loop;
++	gboolean found;
++	char *ap_path;
++	gboolean signaled;
++	gboolean notified;
++	guint quit_id;
++	guint quit_count;
++} WifiApInfo;
++
++static void
++wifi_check_quit (WifiApInfo *info)
++{
++	info->quit_count--;
++	if (info->quit_count == 0) {
++		g_source_remove (info->quit_id);
++		info->quit_id = 0;
++		g_main_loop_quit (info->loop);
++	}
++}
++
++static void
++wifi_device_added_cb (NMClient *c,
++                      NMDevice *device,
++                      WifiApInfo *info)
++{
++	test_assert_cmpstr (nm_device_get_iface (device), ==, "wlan0");
++	info->found = TRUE;
++	wifi_check_quit (info);
++}
++
++static void
++got_ap_path (WifiApInfo *info, const char *path)
++{
++	if (info->ap_path)
++		test_assert_cmpstr (info->ap_path, ==, path);
++	else
++		info->ap_path = g_strdup (path);
++}
++
++static void
++wifi_ap_added_cb (NMDeviceWifi *w,
++                  NMAccessPoint *ap,
++                  WifiApInfo *info)
++{
++	test_assert (ap);
++	test_assert_cmpstr (nm_access_point_get_bssid (ap), ==, expected_bssid);
++	got_ap_path (info, nm_object_get_path (NM_OBJECT (ap)));
++
++	info->signaled = TRUE;
++	wifi_check_quit (info);
++}
++
++static void
++wifi_ap_add_notify_cb (NMDeviceWifi *w,
++                       GParamSpec *pspec,
++                       WifiApInfo *info)
++{
++	const GPtrArray *aps;
++	NMAccessPoint *ap;
++
++	aps = nm_device_wifi_get_access_points (w);
++	test_assert (aps);
++	test_assert_cmpint (aps->len, ==, 1);
++
++	ap = g_ptr_array_index (aps, 0);
++	test_assert (ap);
++	test_assert_cmpstr (nm_access_point_get_bssid (ap), ==, "66:55:44:33:22:11");
++	got_ap_path (info, nm_object_get_path (NM_OBJECT (ap)));
++
++	info->notified = TRUE;
++	wifi_check_quit (info);
++}
++
++static void
++wifi_ap_removed_cb (NMDeviceWifi *w,
++                    NMAccessPoint *ap,
++                    WifiApInfo *info)
++{
++	test_assert (ap);
++	test_assert_cmpstr (info->ap_path, ==, nm_object_get_path (NM_OBJECT (ap)));
++
++	info->signaled = TRUE;
++	wifi_check_quit (info);
++}
++
++static void
++wifi_ap_remove_notify_cb (NMDeviceWifi *w,
++                          GParamSpec *pspec,
++                          WifiApInfo *info)
++{
++	const GPtrArray *aps;
++
++	aps = nm_device_wifi_get_access_points (w);
++	test_assert (aps == NULL);
++
++	info->notified = TRUE;
++	wifi_check_quit (info);
++}
++
++static void
++test_wifi_ap_added_removed (void)
++{
++	NMDeviceWifi *wifi;
++	WifiApInfo info = { loop, FALSE, FALSE, 0, 0 };
++	GVariant *ret;
++	GError *error = NULL;
++	char *expected_path = NULL;
++
++	service_init ();
++
++	/* Give NMClient a chance to initialize */
++	g_timeout_add_seconds (5, loop_quit, loop);
++	g_main_loop_run (loop);
++
++	/*************************************/
++	/* Add the wifi device */
++	add_device ("AddWifiDevice", "wlan0", NULL);
++
++	g_signal_connect (_sinfo->client,
++	                  "device-added",
++	                  (GCallback) wifi_device_added_cb,
++	                  &info);
++	info.quit_count = 1;
++
++	/* Wait for libnm-glib to find the device */
++	info.quit_id = g_timeout_add_seconds (5, loop_quit, loop);
++	g_main_loop_run (loop);
++
++	test_assert (info.found);
++	g_signal_handlers_disconnect_by_func (_sinfo->client, wifi_device_added_cb, &info);
++
++	wifi = (NMDeviceWifi *) nm_client_get_device_by_iface (_sinfo->client, "wlan0");
++	test_assert (NM_IS_DEVICE_WIFI (wifi));
++
++	/*************************************/
++	/* Add the wifi device */
++	info.signaled =  FALSE;
++	info.notified = FALSE;
++	info.quit_id = 0;
++
++	ret = g_dbus_proxy_call_sync (_sinfo->proxy,
++	                              "AddWifiAp",
++	                              g_variant_new ("(sss)", "wlan0", "test-ap", expected_bssid),
++	                              G_DBUS_CALL_FLAGS_NO_AUTO_START,
++	                              3000,
++	                              NULL,
++	                              &error);
++	test_assert_no_error (error);
++	test_assert (ret);
++	test_assert_cmpstr (g_variant_get_type_string (ret), ==, "(o)");
++	g_variant_get (ret, "(o)", &expected_path);
++	g_variant_unref (ret);
++
++	g_signal_connect (wifi,
++	                  "access-point-added",
++	                  (GCallback) wifi_ap_added_cb,
++	                  &info);
++	info.quit_count = 1;
++
++	g_signal_connect (wifi,
++	                  "notify::access-points",
++	                  (GCallback) wifi_ap_add_notify_cb,
++	                  &info);
++	info.quit_count++;
++
++	/* Wait for libnm-glib to find the AP */
++	info.quit_id = g_timeout_add_seconds (5, loop_quit, loop);
++	g_main_loop_run (loop);
++
++	test_assert (info.signaled);
++	test_assert (info.notified);
++	test_assert (info.ap_path);
++	test_assert_cmpstr (info.ap_path, ==, expected_path);
++	g_signal_handlers_disconnect_by_func (wifi, wifi_ap_added_cb, &info);
++	g_signal_handlers_disconnect_by_func (wifi, wifi_ap_add_notify_cb, &info);
++
++	/*************************************/
++	/* Remove the wifi device */
++	info.signaled =  FALSE;
++	info.notified = FALSE;
++	info.quit_id = 0;
++
++	ret = g_dbus_proxy_call_sync (_sinfo->proxy,
++	                              "RemoveWifiAp",
++	                              g_variant_new ("(so)", "wlan0", expected_path),
++	                              G_DBUS_CALL_FLAGS_NO_AUTO_START,
++	                              3000,
++	                              NULL,
++	                              &error);
++	test_assert_no_error (error);
++	g_clear_pointer (&ret, g_variant_unref);
++
++	g_signal_connect (wifi,
++	                  "access-point-removed",
++	                  (GCallback) wifi_ap_removed_cb,
++	                  &info);
++	info.quit_count = 1;
++
++	g_signal_connect (wifi,
++	                  "notify::access-points",
++	                  (GCallback) wifi_ap_remove_notify_cb,
++	                  &info);
++	info.quit_count++;
++
++	/* Wait for libnm-glib to find the AP */
++	info.quit_id = g_timeout_add_seconds (5, loop_quit, loop);
++	g_main_loop_run (loop);
++
++	test_assert (info.signaled);
++	test_assert (info.notified);
++	g_signal_handlers_disconnect_by_func (wifi, wifi_ap_removed_cb, &info);
++	g_signal_handlers_disconnect_by_func (wifi, wifi_ap_remove_notify_cb, &info);
++
++	g_free (info.ap_path);
++	g_free (expected_path);
++	service_cleanup ();
++}
++
++/*******************************************************************/
++
++static const char *expected_nsp_name = "Clear";
++
++typedef struct {
++	GMainLoop *loop;
++	gboolean found;
++	char *nsp_path;
++	gboolean signaled;
++	gboolean notified;
++	guint quit_id;
++	guint quit_count;
++} WimaxNspInfo;
++
++static void
++wimax_check_quit (WimaxNspInfo *info)
++{
++	info->quit_count--;
++	if (info->quit_count == 0) {
++		g_source_remove (info->quit_id);
++		info->quit_id = 0;
++		g_main_loop_quit (info->loop);
++	}
++}
++
++static void
++wimax_device_added_cb (NMClient *c,
++                       NMDevice *device,
++                       WimaxNspInfo *info)
++{
++	test_assert_cmpstr (nm_device_get_iface (device), ==, "wmx0");
++	info->found = TRUE;
++	wimax_check_quit (info);
++}
++
++static void
++got_nsp_path (WimaxNspInfo *info, const char *path)
++{
++	if (info->nsp_path)
++		test_assert_cmpstr (info->nsp_path, ==, path);
++	else
++		info->nsp_path = g_strdup (path);
++}
++
++static void
++wimax_nsp_added_cb (NMDeviceWimax *w,
++                    NMWimaxNsp *nsp,
++                    WimaxNspInfo *info)
++{
++	test_assert (nsp);
++	test_assert_cmpstr (nm_wimax_nsp_get_name (nsp), ==, expected_nsp_name);
++	got_nsp_path (info, nm_object_get_path (NM_OBJECT (nsp)));
++
++	info->signaled = TRUE;
++	wimax_check_quit (info);
++}
++
++static void
++wimax_nsp_add_notify_cb (NMDeviceWimax *w,
++                         GParamSpec *pspec,
++                         WimaxNspInfo *info)
++{
++	const GPtrArray *nsps;
++	NMWimaxNsp *nsp;
++
++	nsps = nm_device_wimax_get_nsps (w);
++	test_assert (nsps);
++	test_assert_cmpint (nsps->len, ==, 1);
++
++	nsp = g_ptr_array_index (nsps, 0);
++	test_assert (nsp);
++	test_assert_cmpstr (nm_wimax_nsp_get_name (nsp), ==, expected_nsp_name);
++	got_nsp_path (info, nm_object_get_path (NM_OBJECT (nsp)));
++
++	info->notified = TRUE;
++	wimax_check_quit (info);
++}
++
++static void
++wimax_nsp_removed_cb (NMDeviceWimax *w,
++                      NMWimaxNsp *nsp,
++                      WimaxNspInfo *info)
++{
++	test_assert (nsp);
++	test_assert_cmpstr (info->nsp_path, ==, nm_object_get_path (NM_OBJECT (nsp)));
++
++	info->signaled = TRUE;
++	wimax_check_quit (info);
++}
++
++static void
++wimax_nsp_remove_notify_cb (NMDeviceWimax *w,
++                            GParamSpec *pspec,
++                            WimaxNspInfo *info)
++{
++	const GPtrArray *nsps;
++
++	nsps = nm_device_wimax_get_nsps (w);
++	test_assert (nsps == NULL);
++
++	info->notified = TRUE;
++	wimax_check_quit (info);
++}
++
++static void
++test_wimax_nsp_added_removed (void)
++{
++	NMDeviceWimax *wimax;
++	WimaxNspInfo info = { loop, FALSE, FALSE, 0, 0 };
++	GVariant *ret;
++	GError *error = NULL;
++	char *expected_path = NULL;
++
++	service_init ();
++
++	/* Give NMClient a chance to initialize */
++	g_timeout_add_seconds (5, loop_quit, loop);
++	g_main_loop_run (loop);
++
++	/*************************************/
++	/* Add the wimax device */
++	add_device ("AddWimaxDevice", "wmx0", NULL);
++
++	g_signal_connect (_sinfo->client,
++	                  "device-added",
++	                  (GCallback) wimax_device_added_cb,
++	                  &info);
++	info.quit_count = 1;
++
++	/* Wait for libnm-glib to find the device */
++	info.quit_id = g_timeout_add_seconds (5, loop_quit, loop);
++	g_main_loop_run (loop);
++
++	test_assert (info.found);
++	g_signal_handlers_disconnect_by_func (_sinfo->client, wimax_device_added_cb, &info);
++
++	wimax = (NMDeviceWimax *) nm_client_get_device_by_iface (_sinfo->client, "wmx0");
++	test_assert (NM_IS_DEVICE_WIMAX (wimax));
++
++	/*************************************/
++	/* Add the wimax NSP */
++	info.signaled =  FALSE;
++	info.notified = FALSE;
++	info.quit_id = 0;
++
++	ret = g_dbus_proxy_call_sync (_sinfo->proxy,
++	                              "AddWimaxNsp",
++	                              g_variant_new ("(ss)", "wmx0", expected_nsp_name),
++	                              G_DBUS_CALL_FLAGS_NO_AUTO_START,
++	                              3000,
++	                              NULL,
++	                              &error);
++	test_assert_no_error (error);
++	test_assert (ret);
++	test_assert_cmpstr (g_variant_get_type_string (ret), ==, "(o)");
++	g_variant_get (ret, "(o)", &expected_path);
++	g_variant_unref (ret);
++
++	g_signal_connect (wimax,
++	                  "nsp-added",
++	                  (GCallback) wimax_nsp_added_cb,
++	                  &info);
++	info.quit_count = 1;
++
++	g_signal_connect (wimax,
++	                  "notify::nsps",
++	                  (GCallback) wimax_nsp_add_notify_cb,
++	                  &info);
++	info.quit_count++;
++
++	/* Wait for libnm-glib to find the AP */
++	info.quit_id = g_timeout_add_seconds (5, loop_quit, loop);
++	g_main_loop_run (loop);
++
++	test_assert (info.signaled);
++	test_assert (info.notified);
++	test_assert (info.nsp_path);
++	test_assert_cmpstr (info.nsp_path, ==, expected_path);
++	g_signal_handlers_disconnect_by_func (wimax, wimax_nsp_added_cb, &info);
++	g_signal_handlers_disconnect_by_func (wimax, wimax_nsp_add_notify_cb, &info);
++
++	/*************************************/
++	/* Remove the wimax NSP */
++	info.signaled =  FALSE;
++	info.notified = FALSE;
++	info.quit_id = 0;
++
++	ret = g_dbus_proxy_call_sync (_sinfo->proxy,
++	                              "RemoveWimaxNsp",
++	                              g_variant_new ("(so)", "wmx0", expected_path),
++	                              G_DBUS_CALL_FLAGS_NO_AUTO_START,
++	                              3000,
++	                              NULL,
++	                              &error);
++	test_assert_no_error (error);
++	g_clear_pointer (&ret, g_variant_unref);
++
++	g_signal_connect (wimax,
++	                  "nsp-removed",
++	                  (GCallback) wimax_nsp_removed_cb,
++	                  &info);
++	info.quit_count = 1;
++
++	g_signal_connect (wimax,
++	                  "notify::nsps",
++	                  (GCallback) wimax_nsp_remove_notify_cb,
++	                  &info);
++	info.quit_count++;
++
++	/* Wait for libnm-glib to find the AP */
++	info.quit_id = g_timeout_add_seconds (5, loop_quit, loop);
++	g_main_loop_run (loop);
++
++	test_assert (info.signaled);
++	test_assert (info.notified);
++	g_signal_handlers_disconnect_by_func (wimax, wimax_nsp_removed_cb, &info);
++	g_signal_handlers_disconnect_by_func (wimax, wimax_nsp_remove_notify_cb, &info);
++
++	g_free (info.nsp_path);
++	g_free (expected_path);
++	service_cleanup ();
++}
++
++/*******************************************************************/
++
++typedef struct {
++	GMainLoop *loop;
++	gboolean signaled;
++	gboolean notified;
++	guint quit_count;
++	guint quit_id;
++} DaInfo;
++
++static void
++da_check_quit (DaInfo *info)
++{
++	info->quit_count--;
++	if (info->quit_count == 0) {
++		g_source_remove (info->quit_id);
++		info->quit_id = 0;
++		g_main_loop_quit (info->loop);
++	}
++}
++
++static void
++da_device_added_cb (NMClient *c,
++                    NMDevice *device,
++                    DaInfo *info)
++{
++	da_check_quit (info);
++}
++
++static void
++da_device_removed_cb (NMClient *c,
++                      NMDevice *device,
++                      DaInfo *info)
++{
++	test_assert_cmpstr (nm_device_get_iface (device), ==, "eth0");
++	info->signaled = TRUE;
++	da_check_quit (info);
++}
++
++static void
++da_devices_notify_cb (NMClient *c,
++                      GParamSpec *pspec,
++                      DaInfo *info)
++{
++	const GPtrArray *devices;
++	NMDevice *device;
++	guint i;
++	const char *iface;
++
++	devices = nm_client_get_devices (c);
++	test_assert (devices);
++	test_assert_cmpint (devices->len, ==, 2);
++
++	for (i = 0; i < devices->len; i++) {
++		device = g_ptr_array_index (devices, i);
++		iface = nm_device_get_iface (device);
++
++		test_assert (!strcmp (iface, "wlan0") || !strcmp (iface, "eth1"));
++	}
++
++	info->notified = TRUE;
++	da_check_quit (info);
++}
++
++static void
++test_devices_array (void)
++{
++	DaInfo info = { loop };
++	char *paths[3] = { NULL, NULL, NULL };
++	NMDevice *device;
++	const GPtrArray *devices;
++	GError *error = NULL;
++	GVariant *ret;
++
++	service_init ();
++
++	/* Give NMClient a chance to initialize */
++	g_timeout_add_seconds (5, loop_quit, loop);
++	g_main_loop_run (loop);
++
++	/*************************************/
++	/* Add some devices */
++	add_device ("AddWifiDevice", "wlan0", &paths[0]);
++	add_device ("AddWiredDevice", "eth0", &paths[1]);
++	add_device ("AddWiredDevice", "eth1", &paths[2]);
++	info.quit_count = 3;
++
++	g_signal_connect (_sinfo->client,
++	                  "device-added",
++	                  (GCallback) da_device_added_cb,
++	                  &info);
++
++	/* Wait for libnm-glib to find the device */
++	info.quit_id = g_timeout_add_seconds (5, loop_quit, loop);
++	g_main_loop_run (loop);
++
++	test_assert_cmpint (info.quit_count, ==, 0);
++	g_signal_handlers_disconnect_by_func (_sinfo->client, da_device_added_cb, &info);
++
++	/* Ensure the devices now exist */
++	devices = nm_client_get_devices (_sinfo->client);
++	test_assert (devices);
++	test_assert_cmpint (devices->len, ==, 3);
++
++	device = nm_client_get_device_by_iface (_sinfo->client, "wlan0");
++	test_assert (NM_IS_DEVICE_WIFI (device));
++
++	device = nm_client_get_device_by_iface (_sinfo->client, "eth0");
++	test_assert (NM_IS_DEVICE_ETHERNET (device));
++
++	device = nm_client_get_device_by_iface (_sinfo->client, "eth1");
++	test_assert (NM_IS_DEVICE_ETHERNET (device));
++
++	/********************************/
++	/* Now remove the device in the middle */
++	ret = g_dbus_proxy_call_sync (_sinfo->proxy,
++	                              "RemoveDevice",
++	                              g_variant_new ("(o)", paths[1]),
++	                              G_DBUS_CALL_FLAGS_NO_AUTO_START,
++	                              3000,
++	                              NULL,
++	                              &error);
++	test_assert_no_error (error);
++	test_assert (ret);
++	g_variant_unref (ret);
++
++	g_signal_connect (_sinfo->client,
++	                  "device-removed",
++	                  (GCallback) da_device_removed_cb,
++	                  &info);
++
++	g_signal_connect (_sinfo->client,
++	                  "notify::devices",
++	                  (GCallback) da_devices_notify_cb,
++	                  &info);
++	info.quit_count = 2;
++
++	/* Wait for libnm-glib to find the device */
++	info.quit_id = g_timeout_add_seconds (5, loop_quit, loop);
++	g_main_loop_run (loop);
++
++	test_assert_cmpint (info.quit_count, ==, 0);
++	g_signal_handlers_disconnect_by_func (_sinfo->client, da_device_removed_cb, &info);
++	g_signal_handlers_disconnect_by_func (_sinfo->client, da_devices_notify_cb, &info);
++
++	/* Ensure only two are left */
++	devices = nm_client_get_devices (_sinfo->client);
++	test_assert (devices);
++	test_assert_cmpint (devices->len, ==, 2);
++
++	device = nm_client_get_device_by_iface (_sinfo->client, "wlan0");
++	test_assert (NM_IS_DEVICE_WIFI (device));
++
++	device = nm_client_get_device_by_iface (_sinfo->client, "eth1");
++	test_assert (NM_IS_DEVICE_ETHERNET (device));
++
++	g_free (paths[0]);
++	g_free (paths[1]);
++	g_free (paths[2]);
++	service_cleanup ();
++}
++
++/*******************************************************************/
++
++int
++main (int argc, char **argv)
++{
++	g_assert (argc == 3);
++
++	g_type_init ();
++
++	g_test_init (&argc, &argv, NULL);
++
++	fake_path = argv[1];
++	fake_bin = argv[2];
++	fake_exec = g_strdup_printf ("%s/%s", argv[1], argv[2]);
++
++	loop = g_main_loop_new (NULL, FALSE);
++
++	g_test_add_func ("/libnm-glib/device-added", test_device_added);
++	g_test_add_func ("/libnm-glib/wifi-ap-added-removed", test_wifi_ap_added_removed);
++	g_test_add_func ("/libnm-glib/wimax-nsp-added-removed", test_wimax_nsp_added_removed);
++	g_test_add_func ("/libnm-glib/devices-array", test_devices_array);
++
++	return g_test_run ();
++}
++
+-- 
+1.8.5.3
+
+
+From 3ae1fbde38aa35519f916a49736c033cb25e97df Mon Sep 17 00:00:00 2001
+From: Dan Williams <dcbw@redhat.com>
+Date: Tue, 21 Jan 2014 14:29:16 -0600
+Subject: [PATCH 16/16] trivial: remove unused #defines
+
+These are no longer used by anything, but are determined
+automatically from the GObject property names.
+
+(cherry picked from commit 24ba56faab67ed9f187d48ec61cab1a9e7addf42)
+---
+ libnm-glib/nm-access-point.c      | 10 ----------
+ libnm-glib/nm-device-adsl.c       |  1 -
+ libnm-glib/nm-device-bond.c       |  4 ----
+ libnm-glib/nm-device-bridge.c     |  4 ----
+ libnm-glib/nm-device-bt.c         |  4 ----
+ libnm-glib/nm-device-ethernet.c   |  5 -----
+ libnm-glib/nm-device-generic.c    |  3 ---
+ libnm-glib/nm-device-infiniband.c |  3 ---
+ libnm-glib/nm-device-modem.c      |  3 ---
+ libnm-glib/nm-device-olpc-mesh.c  |  4 ----
+ libnm-glib/nm-device-team.c       |  4 ----
+ libnm-glib/nm-device-vlan.c       |  4 ----
+ libnm-glib/nm-device-wifi.c       |  7 -------
+ libnm-glib/nm-device-wimax.c      |  8 --------
+ libnm-glib/nm-vpn-connection.c    |  3 ---
+ libnm-glib/nm-wimax-nsp.c         |  4 ----
+ 16 files changed, 71 deletions(-)
+
+diff --git a/libnm-glib/nm-access-point.c b/libnm-glib/nm-access-point.c
+index ade8d6e..56dcb11 100644
+--- a/libnm-glib/nm-access-point.c
++++ b/libnm-glib/nm-access-point.c
+@@ -72,16 +72,6 @@ enum {
+ 	LAST_PROP
+ };
+ 
+-#define DBUS_PROP_FLAGS "Flags"
+-#define DBUS_PROP_WPA_FLAGS "WpaFlags"
+-#define DBUS_PROP_RSN_FLAGS "RsnFlags"
+-#define DBUS_PROP_SSID "Ssid"
+-#define DBUS_PROP_FREQUENCY "Frequency"
+-#define DBUS_PROP_HW_ADDRESS "HwAddress"
+-#define DBUS_PROP_MODE "Mode"
+-#define DBUS_PROP_MAX_BITRATE "MaxBitrate"
+-#define DBUS_PROP_STRENGTH "Strength"
+-
+ /**
+  * nm_access_point_new:
+  * @connection: the #DBusGConnection
+diff --git a/libnm-glib/nm-device-adsl.c b/libnm-glib/nm-device-adsl.c
+index d795199..e2db4da 100644
+--- a/libnm-glib/nm-device-adsl.c
++++ b/libnm-glib/nm-device-adsl.c
+@@ -46,7 +46,6 @@ enum {
+ 	PROP_CARRIER,
+ 	LAST_PROP
+ };
+-#define DBUS_PROP_CARRIER "Carrier"
+ 
+ /**
+  * nm_device_adsl_error_quark:
+diff --git a/libnm-glib/nm-device-bond.c b/libnm-glib/nm-device-bond.c
+index 0b313b1..161083f 100644
+--- a/libnm-glib/nm-device-bond.c
++++ b/libnm-glib/nm-device-bond.c
+@@ -56,10 +56,6 @@ enum {
+ 	LAST_PROP
+ };
+ 
+-#define DBUS_PROP_HW_ADDRESS "HwAddress"
+-#define DBUS_PROP_CARRIER "Carrier"
+-#define DBUS_PROP_SLAVES "Slaves"
+-
+ /**
+  * nm_device_bond_error_quark:
+  *
+diff --git a/libnm-glib/nm-device-bridge.c b/libnm-glib/nm-device-bridge.c
+index 6e00920..f1ddf74 100644
+--- a/libnm-glib/nm-device-bridge.c
++++ b/libnm-glib/nm-device-bridge.c
+@@ -56,10 +56,6 @@ enum {
+ 	LAST_PROP
+ };
+ 
+-#define DBUS_PROP_HW_ADDRESS "HwAddress"
+-#define DBUS_PROP_CARRIER "Carrier"
+-#define DBUS_PROP_SLAVES "Slaves"
+-
+ /**
+  * nm_device_bridge_error_quark:
+  *
+diff --git a/libnm-glib/nm-device-bt.c b/libnm-glib/nm-device-bt.c
+index 20312a6..33c934c 100644
+--- a/libnm-glib/nm-device-bt.c
++++ b/libnm-glib/nm-device-bt.c
+@@ -55,10 +55,6 @@ enum {
+ 	LAST_PROP
+ };
+ 
+-#define DBUS_PROP_HW_ADDRESS      "HwAddress"
+-#define DBUS_PROP_NAME            "Name"
+-#define DBUS_PROP_BT_CAPABILITIES "BtCapabilities"
+-
+ /**
+  * nm_device_bt_error_quark:
+  *
+diff --git a/libnm-glib/nm-device-ethernet.c b/libnm-glib/nm-device-ethernet.c
+index 3831f64..2776206 100644
+--- a/libnm-glib/nm-device-ethernet.c
++++ b/libnm-glib/nm-device-ethernet.c
+@@ -58,11 +58,6 @@ enum {
+ 	LAST_PROP
+ };
+ 
+-#define DBUS_PROP_HW_ADDRESS "HwAddress"
+-#define DBUS_PROP_PERM_HW_ADDRESS "PermHwAddress"
+-#define DBUS_PROP_SPEED "Speed"
+-#define DBUS_PROP_CARRIER "Carrier"
+-
+ /**
+  * nm_device_ethernet_error_quark:
+  *
+diff --git a/libnm-glib/nm-device-generic.c b/libnm-glib/nm-device-generic.c
+index f014e65..0a72196 100644
+--- a/libnm-glib/nm-device-generic.c
++++ b/libnm-glib/nm-device-generic.c
+@@ -48,9 +48,6 @@ enum {
+ 	LAST_PROP
+ };
+ 
+-#define DBUS_PROP_HW_ADDRESS "HwAddress"
+-#define DBUS_PROP_TYPE_DESCRIPTION "TypeDescription"
+-
+ /**
+  * nm_device_generic_error_quark:
+  *
+diff --git a/libnm-glib/nm-device-infiniband.c b/libnm-glib/nm-device-infiniband.c
+index 070b8f8..4e67173 100644
+--- a/libnm-glib/nm-device-infiniband.c
++++ b/libnm-glib/nm-device-infiniband.c
+@@ -54,9 +54,6 @@ enum {
+ 	LAST_PROP
+ };
+ 
+-#define DBUS_PROP_HW_ADDRESS "HwAddress"
+-#define DBUS_PROP_CARRIER "Carrier"
+-
+ /**
+  * nm_device_infiniband_error_quark:
+  *
+diff --git a/libnm-glib/nm-device-modem.c b/libnm-glib/nm-device-modem.c
+index e7ac4d7..d20f4f2 100644
+--- a/libnm-glib/nm-device-modem.c
++++ b/libnm-glib/nm-device-modem.c
+@@ -54,9 +54,6 @@ enum {
+ 	LAST_PROP
+ };
+ 
+-#define DBUS_PROP_MODEM_CAPS "ModemCapabilities"
+-#define DBUS_PROP_CURRENT_CAPS "CurrentCapabilities"
+-
+ /**
+  * nm_device_modem_error_quark:
+  *
+diff --git a/libnm-glib/nm-device-olpc-mesh.c b/libnm-glib/nm-device-olpc-mesh.c
+index 6235569..3a353f8 100644
+--- a/libnm-glib/nm-device-olpc-mesh.c
++++ b/libnm-glib/nm-device-olpc-mesh.c
+@@ -55,10 +55,6 @@ enum {
+ 	LAST_PROP
+ };
+ 
+-#define DBUS_PROP_HW_ADDRESS      "HwAddress"
+-#define DBUS_PROP_COMPANION       "Companion"
+-#define DBUS_PROP_ACTIVE_CHANNEL  "ActiveChannel"
+-
+ /**
+  * nm_device_olpc_mesh_error_quark:
+  *
+diff --git a/libnm-glib/nm-device-team.c b/libnm-glib/nm-device-team.c
+index 3d1abed..b9b3b55 100644
+--- a/libnm-glib/nm-device-team.c
++++ b/libnm-glib/nm-device-team.c
+@@ -54,10 +54,6 @@ enum {
+ 	LAST_PROP
+ };
+ 
+-#define DBUS_PROP_HW_ADDRESS "HwAddress"
+-#define DBUS_PROP_CARRIER "Carrier"
+-#define DBUS_PROP_SLAVES "Slaves"
+-
+ /**
+  * nm_device_team_error_quark:
+  *
+diff --git a/libnm-glib/nm-device-vlan.c b/libnm-glib/nm-device-vlan.c
+index 19342b9..bd4cb78 100644
+--- a/libnm-glib/nm-device-vlan.c
++++ b/libnm-glib/nm-device-vlan.c
+@@ -55,10 +55,6 @@ enum {
+ 	LAST_PROP
+ };
+ 
+-#define DBUS_PROP_HW_ADDRESS "HwAddress"
+-#define DBUS_PROP_CARRIER "Carrier"
+-#define DBUS_PROP_VLAN_ID "VlanId"
+-
+ /**
+  * nm_device_vlan_error_quark:
+  *
+diff --git a/libnm-glib/nm-device-wifi.c b/libnm-glib/nm-device-wifi.c
+index a6e57d0..cda8eb0 100644
+--- a/libnm-glib/nm-device-wifi.c
++++ b/libnm-glib/nm-device-wifi.c
+@@ -78,13 +78,6 @@ enum {
+ 	LAST_PROP
+ };
+ 
+-#define DBUS_PROP_HW_ADDRESS "HwAddress"
+-#define DBUS_PROP_PERM_HW_ADDRESS "PermHwAddress"
+-#define DBUS_PROP_MODE "Mode"
+-#define DBUS_PROP_BITRATE "Bitrate"
+-#define DBUS_PROP_ACTIVE_ACCESS_POINT "ActiveAccessPoint"
+-#define DBUS_PROP_WIRELESS_CAPABILITIES "WirelessCapabilities"
+-
+ enum {
+ 	ACCESS_POINT_ADDED,
+ 	ACCESS_POINT_REMOVED,
+diff --git a/libnm-glib/nm-device-wimax.c b/libnm-glib/nm-device-wimax.c
+index a3cc510..17cbd86 100644
+--- a/libnm-glib/nm-device-wimax.c
++++ b/libnm-glib/nm-device-wimax.c
+@@ -71,14 +71,6 @@ enum {
+ 	LAST_PROP
+ };
+ 
+-#define DBUS_PROP_HW_ADDRESS       "HwAddress"
+-#define DBUS_PROP_ACTIVE_NSP       "ActiveNsp"
+-#define DBUS_PROP_CENTER_FREQUENCY "CenterFrequency"
+-#define DBUS_PROP_RSSI             "Rssi"
+-#define DBUS_PROP_CINR             "Cinr"
+-#define DBUS_PROP_TX_POWER         "TxPower"
+-#define DBUS_PROP_BSID             "Bsid"
+-
+ enum {
+ 	NSP_ADDED,
+ 	NSP_REMOVED,
+diff --git a/libnm-glib/nm-vpn-connection.c b/libnm-glib/nm-vpn-connection.c
+index abea04a..12814cf 100644
+--- a/libnm-glib/nm-vpn-connection.c
++++ b/libnm-glib/nm-vpn-connection.c
+@@ -46,9 +46,6 @@ enum {
+ 	LAST_PROP
+ };
+ 
+-#define DBUS_PROP_VPN_STATE "VpnState"
+-#define DBUS_PROP_BANNER "Banner"
+-
+ enum {
+ 	VPN_STATE_CHANGED,
+ 
+diff --git a/libnm-glib/nm-wimax-nsp.c b/libnm-glib/nm-wimax-nsp.c
+index b837f9c..f747aff 100644
+--- a/libnm-glib/nm-wimax-nsp.c
++++ b/libnm-glib/nm-wimax-nsp.c
+@@ -55,10 +55,6 @@ enum {
+ 	LAST_PROP
+ };
+ 
+-#define DBUS_PROP_NAME "Name"
+-#define DBUS_PROP_SIGNAL_QUALITY "SignalQuality"
+-#define DBUS_PROP_NETWORK_TYPE "NetworkType"
+-
+ /**
+  * nm_wimax_nsp_new:
+  * @connection: the #DBusGConnection
+-- 
+1.8.5.3
+

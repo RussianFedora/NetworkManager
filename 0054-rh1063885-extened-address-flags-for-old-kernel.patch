@@ -1,0 +1,55 @@
+From d4e54f22ff4550b27f0c2953191f65a69bdb814c Mon Sep 17 00:00:00 2001
+From: Thomas Haller <thaller@redhat.com>
+Date: Fri, 4 Apr 2014 16:14:46 +0200
+Subject: [PATCH 1/1] platform: workaround older kernels that don't accept
+ extended address flags via netlink
+
+Extended address flags are represented by the additional netlink
+attribute IFA_FLAGS. Older kernels don't know this flag and refuse
+the messages RTM_NEWADDR and RTMDEL_ADDR when it contains unknown
+attributes. See net/core/rtnetlink.c, rtnetlink_rcv_msg(). This was
+fixed by kernel commit 661d2967b3f1b34eeaa7e212e7b9bbe8ee072b59.
+
+libnl was fixed in commit 5206c050504f8676a24854519b9c351470fb7cc6 only to
+send the additional netlink attribute, when there are actually flags
+that make this necessary.
+
+This commit changes nm-platform to strip the flags to &= 0xFF, if we detect
+that the kernel does not understand extended address flags.
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1063885
+
+Signed-off-by: Thomas Haller <thaller@redhat.com>
+(cherry picked from commit dac51747ab5853b00557d7d97d4b2eae05968c03)
+---
+ src/platform/nm-linux-platform.c | 13 ++++++++++++-
+ 1 file changed, 12 insertions(+), 1 deletion(-)
+
+diff --git a/src/platform/nm-linux-platform.c b/src/platform/nm-linux-platform.c
+index b5e3618..dacdc16 100644
+--- a/src/platform/nm-linux-platform.c
++++ b/src/platform/nm-linux-platform.c
+@@ -2405,8 +2405,19 @@ build_rtnl_addr (int family,
+ 		rtnl_addr_set_valid_lifetime (rtnladdr, lifetime);
+ 		rtnl_addr_set_preferred_lifetime (rtnladdr, preferred);
+ 	}
+-	if (flags)
++	if (flags) {
++		if ((flags & ~0xFF) && !check_support_kernel_extended_ifa_flags (nm_platform_get ())) {
++			/* Older kernels don't accept unknown netlink attributes.
++			 *
++			 * With commit libnl commit 5206c050504f8676a24854519b9c351470fb7cc6, libnl will only set
++			 * the extended address flags attribute IFA_FLAGS when necessary (> 8 bit). But it's up to
++			 * us not to shove those extended flags on to older kernels.
++			 *
++			 * Just silently clear them. The kernel should ignore those unknown flags anyway. */
++			flags &= 0xFF;
++		}
+ 		rtnl_addr_set_flags (rtnladdr, flags);
++	}
+ 
+ 	return (struct nl_object *) rtnladdr;
+ }
+-- 
+1.9.0
+

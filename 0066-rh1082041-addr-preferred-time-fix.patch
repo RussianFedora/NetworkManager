@@ -1,0 +1,50 @@
+From d90b9ff2c855bf4350070957a72b267f7edb7898 Mon Sep 17 00:00:00 2001
+From: Thomas Haller <thaller@redhat.com>
+Date: Mon, 31 Mar 2014 11:19:45 +0200
+Subject: [PATCH] platform: fix setting preferred time for address
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Before nm_platform_ip4_address_sync() set the preferred time to the same value
+as the address lifetime. The result was that the preferred time was
+always identical to valid lifetime.
+
+This will lead to the kernel using the address longer then the desired
+preferred time (until validity of the address expires).
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1082041
+https://bugzilla.redhat.com/show_bug.cgi?id=1083283
+
+Reported-by: Kai Engert <kengert@redhat.com>
+Signed-off-by: Thomas Haller <thaller@redhat.com>
+Signed-off-by: Jiří Klimeš <jklimes@redhat.com>
+---
+ src/platform/nm-platform.c | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/src/platform/nm-platform.c b/src/platform/nm-platform.c
+index 0477477..c7e5d2b 100644
+--- a/src/platform/nm-platform.c
++++ b/src/platform/nm-platform.c
+@@ -1354,7 +1354,7 @@ nm_platform_ip4_address_sync (int ifindex, const GArray *known_addresses)
+ 			guint32 shift = subtract_guint32 (now, known_address->timestamp + 5);
+ 
+ 			lifetime = subtract_guint32 (known_address->lifetime, shift);
+-			preferred = subtract_guint32 (known_address->lifetime, shift);
++			preferred = subtract_guint32 (known_address->preferred, shift);
+ 		} else
+ 			lifetime = preferred = NM_PLATFORM_LIFETIME_PERMANENT;
+ 
+@@ -1411,7 +1411,7 @@ nm_platform_ip6_address_sync (int ifindex, const GArray *known_addresses)
+ 			guint32 shift = subtract_guint32 (now, known_address->timestamp + 5);
+ 
+ 			lifetime = subtract_guint32 (known_address->lifetime, shift);
+-			preferred = subtract_guint32 (known_address->lifetime, shift);
++			preferred = subtract_guint32 (known_address->preferred, shift);
+ 		} else
+ 			lifetime = preferred = NM_PLATFORM_LIFETIME_PERMANENT;
+ 
+-- 
+1.7.11.7
+

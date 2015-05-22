@@ -1,0 +1,708 @@
+From ee9be9cef769cdfb3a14ec65741f1c36d0b1ac32 Mon Sep 17 00:00:00 2001
+From: Thomas Haller <thaller@redhat.com>
+Date: Tue, 4 Mar 2014 14:32:46 +0100
+Subject: [PATCH 01/10] core: fix adding gateway routes within the own subnet
+
+Before, when adding a gateway route to a destination within the
+current subnets, it would be skipped because of the wrong assumption
+that we already have a prefix route to that destination.
+
+This assumption is wrong, because we want to reach the more specific
+subnet via a gateway and not directly on the link.
+
+Signed-off-by: Thomas Haller <thaller@redhat.com>
+(cherry picked from commit 4f7b1cabc063bfda96cb5c129d6a233e5d5cff68)
+---
+ src/nm-ip4-config.c | 3 ++-
+ src/nm-ip6-config.c | 3 ++-
+ 2 files changed, 4 insertions(+), 2 deletions(-)
+
+diff --git a/src/nm-ip4-config.c b/src/nm-ip4-config.c
+index bb85926..b7ae161 100644
+--- a/src/nm-ip4-config.c
++++ b/src/nm-ip4-config.c
+@@ -169,7 +169,8 @@ nm_ip4_config_commit (const NMIP4Config *config, int ifindex, int priority)
+ 			/* Don't add the route if it's more specific than one of the subnets
+ 			 * the device already has an IP address on.
+ 			 */
+-			if (nm_ip4_config_destination_is_direct (config, route.network, route.plen))
++			if (   route.gateway == 0
++			    && nm_ip4_config_destination_is_direct (config, route.network, route.plen))
+ 				continue;
+ 
+ 			/* Don't add the default route when and the connection
+diff --git a/src/nm-ip6-config.c b/src/nm-ip6-config.c
+index 3a56f4f..2a6c8a3 100644
+--- a/src/nm-ip6-config.c
++++ b/src/nm-ip6-config.c
+@@ -168,7 +168,8 @@ nm_ip6_config_commit (const NMIP6Config *config, int ifindex, int priority)
+ 			/* Don't add the route if it's more specific than one of the subnets
+ 			 * the device already has an IP address on.
+ 			 */
+-			if (nm_ip6_config_destination_is_direct (config, &route.network, route.plen))
++			if (   IN6_IS_ADDR_UNSPECIFIED (&route.gateway)
++			    && nm_ip6_config_destination_is_direct (config, &route.network, route.plen))
+ 				continue;
+ 
+ 			/* Don't add the default route when and the connection
+-- 
+1.8.5.3
+
+
+From 9efbadda08792db99d708a89586be31445d61f83 Mon Sep 17 00:00:00 2001
+From: Thomas Haller <thaller@redhat.com>
+Date: Tue, 4 Mar 2014 14:30:01 +0100
+Subject: [PATCH 02/10] tivial/core: move common #defines to header file
+
+Signed-off-by: Thomas Haller <thaller@redhat.com>
+(cherry picked from commit 8cd0de231a27d26e719f1b747f95ae53f5fec59e)
+---
+ src/devices/nm-device.c    | 8 --------
+ src/platform/nm-platform.c | 8 --------
+ src/platform/nm-platform.h | 8 ++++++++
+ 3 files changed, 8 insertions(+), 16 deletions(-)
+
+diff --git a/src/devices/nm-device.c b/src/devices/nm-device.c
+index 7757153..6f3213a 100644
+--- a/src/devices/nm-device.c
++++ b/src/devices/nm-device.c
+@@ -69,14 +69,6 @@
+ #include "nm-config.h"
+ #include "nm-platform.h"
+ 
+-/* workaround for older libnl version, that does not define these flags. */
+-#ifndef IFA_F_MANAGETEMPADDR
+-#define IFA_F_MANAGETEMPADDR 0x100
+-#endif
+-#ifndef IFA_F_NOPREFIXROUTE
+-#define IFA_F_NOPREFIXROUTE 0x200
+-#endif
+-
+ static void impl_device_disconnect (NMDevice *device, DBusGMethodInvocation *context);
+ 
+ #include "nm-device-glue.h"
+diff --git a/src/platform/nm-platform.c b/src/platform/nm-platform.c
+index 37d4318..97540fc 100644
+--- a/src/platform/nm-platform.c
++++ b/src/platform/nm-platform.c
+@@ -33,14 +33,6 @@
+ #include "nm-logging.h"
+ #include "nm-enum-types.h"
+ 
+-/* workaround for older libnl version, that does not define these flags. */
+-#ifndef IFA_F_MANAGETEMPADDR
+-#define IFA_F_MANAGETEMPADDR 0x100
+-#endif
+-#ifndef IFA_F_NOPREFIXROUTE
+-#define IFA_F_NOPREFIXROUTE 0x200
+-#endif
+-
+ #define debug(...) nm_log_dbg (LOGD_PLATFORM, __VA_ARGS__)
+ 
+ #define NM_PLATFORM_GET_PRIVATE(o) (G_TYPE_INSTANCE_GET_PRIVATE ((o), NM_TYPE_PLATFORM, NMPlatformPrivate))
+diff --git a/src/platform/nm-platform.h b/src/platform/nm-platform.h
+index 9375148..2725dd9 100644
+--- a/src/platform/nm-platform.h
++++ b/src/platform/nm-platform.h
+@@ -35,6 +35,14 @@
+ 
+ /******************************************************************/
+ 
++/* workaround for older libnl version, that does not define these flags. */
++#ifndef IFA_F_MANAGETEMPADDR
++#define IFA_F_MANAGETEMPADDR 0x100
++#endif
++#ifndef IFA_F_NOPREFIXROUTE
++#define IFA_F_NOPREFIXROUTE 0x200
++#endif
++
+ typedef enum {
+ 	/* no error specified, sometimes this means the arguments were wrong */
+ 	NM_PLATFORM_ERROR_NONE,
+-- 
+1.8.5.3
+
+
+From b35e2118ac4c4380e3b7536b98f64bec195898ff Mon Sep 17 00:00:00 2001
+From: Thomas Haller <thaller@redhat.com>
+Date: Tue, 4 Mar 2014 14:34:12 +0100
+Subject: [PATCH 03/10] core: fix adding gateway route for IPv6
+
+Setting the address flag IFA_F_NOPREFIXROUTE broke adding the device route to
+the IPv6 prefix because the check for nm_ip6_config_destination_is_direct()
+caused the route to be skipped. This, together with the kernel no
+longer adding the prefix route resulted in no device route for autoconf
+/64 prefixes.
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1068632
+https://bugzilla.redhat.com/show_bug.cgi?id=1072410
+
+Signed-off-by: Thomas Haller <thaller@redhat.com>
+(cherry picked from commit d6f6ccef432fb45a30b0b642975acd36d08410fb)
+---
+ src/devices/nm-device.c | 9 +++++----
+ src/nm-ip6-config.c     | 3 ++-
+ 2 files changed, 7 insertions(+), 5 deletions(-)
+
+diff --git a/src/devices/nm-device.c b/src/devices/nm-device.c
+index 6f3213a..c7f72b8 100644
+--- a/src/devices/nm-device.c
++++ b/src/devices/nm-device.c
+@@ -3282,13 +3282,14 @@ rdisc_config_changed (NMRDisc *rdisc, NMRDiscConfigMap changed, NMDevice *device
+ 		                 nm_platform_check_support_kernel_extended_ifa_flags ();
+ 	}
+ 
+-	/* without system_support, these flags will be ignored.
+-	 * Still, we set them (why not?).
+-	 **/
+-	ifa_flags = IFA_F_NOPREFIXROUTE;
++	if (system_support)
++		ifa_flags = IFA_F_NOPREFIXROUTE;
+ 	if (priv->rdisc_use_tempaddr == NM_SETTING_IP6_CONFIG_PRIVACY_PREFER_TEMP_ADDR
+ 	    || priv->rdisc_use_tempaddr == NM_SETTING_IP6_CONFIG_PRIVACY_PREFER_PUBLIC_ADDR)
++	{
++		/* without system_support, this flag will be ignored. Still set it, doesn't seem to do any harm. */
+ 		ifa_flags |= IFA_F_MANAGETEMPADDR;
++	}
+ 
+ 	g_return_if_fail (priv->act_request);
+ 	connection = nm_device_get_connection (device);
+diff --git a/src/nm-ip6-config.c b/src/nm-ip6-config.c
+index 2a6c8a3..58ad2e0 100644
+--- a/src/nm-ip6-config.c
++++ b/src/nm-ip6-config.c
+@@ -398,7 +398,8 @@ nm_ip6_config_destination_is_direct (const NMIP6Config *config, const struct in6
+ 	for (i = 0; i < num; i++) {
+ 		const NMPlatformIP6Address *item = nm_ip6_config_get_address (config, i);
+ 
+-		if (item->plen <= plen && same_prefix (&item->address, network, item->plen))
++		if (item->plen <= plen && same_prefix (&item->address, network, item->plen) &&
++		    !(item->flags & IFA_F_NOPREFIXROUTE))
+ 			return TRUE;
+ 	}
+ 
+-- 
+1.8.5.3
+
+
+From cf576344d6f2e7616daf50b5e3dcd1dd1bbbf663 Mon Sep 17 00:00:00 2001
+From: Dan Winship <danw@gnome.org>
+Date: Thu, 6 Mar 2014 11:58:50 -0500
+Subject: [PATCH 04/10] rdisc: set the expiration timer correctly (rh #1073560)
+
+check_timestamps() was mixing up absolute and relative timestamps,
+which meant that IPv6 expiration checks more-or-less stopped happening
+after a while, allowing expired IPv6 routes, etc, to remain applied.
+
+(cherry picked from commit 5ec9b9e97c1e1647c7bb45c79518f1c49cb23cd6)
+---
+ src/rdisc/nm-lndp-rdisc.c | 6 ++++--
+ 1 file changed, 4 insertions(+), 2 deletions(-)
+
+diff --git a/src/rdisc/nm-lndp-rdisc.c b/src/rdisc/nm-lndp-rdisc.c
+index 7d61b59..048cae9 100644
+--- a/src/rdisc/nm-lndp-rdisc.c
++++ b/src/rdisc/nm-lndp-rdisc.c
+@@ -380,8 +380,10 @@ check_timestamps (NMRDisc *rdisc, guint32 now, NMRDiscConfigMap changed)
+ 		g_signal_emit_by_name (rdisc, NM_RDISC_CONFIG_CHANGED, changed);
+ 
+ 	if (nextevent != never) {
+-		debug ("(%s): scheduling next now/lifetime check: %u seconds", rdisc->ifname, nextevent);
+-		priv->timeout_id = g_timeout_add_seconds (nextevent, timeout_cb, rdisc);
++		g_return_if_fail (nextevent > now);
++		debug ("(%s): scheduling next now/lifetime check: %u seconds",
++		       rdisc->ifname, nextevent - now);
++		priv->timeout_id = g_timeout_add_seconds (nextevent - now, timeout_cb, rdisc);
+ 	}
+ }
+ 
+-- 
+1.8.5.3
+
+
+From 97aefecea0465f0a56733d42cf19393e42c4fa03 Mon Sep 17 00:00:00 2001
+From: Dan Winship <danw@gnome.org>
+Date: Tue, 4 Mar 2014 18:18:13 -0500
+Subject: [PATCH 05/10] libnm-glib: fix a double free in NMDeviceVlan
+
+(cherry picked from commit 6300ea57ab4ee57a1afa4c76cb1d9503d78385a7)
+---
+ libnm-glib/nm-device-vlan.c | 1 -
+ 1 file changed, 1 deletion(-)
+
+diff --git a/libnm-glib/nm-device-vlan.c b/libnm-glib/nm-device-vlan.c
+index bd4cb78..3e20240 100644
+--- a/libnm-glib/nm-device-vlan.c
++++ b/libnm-glib/nm-device-vlan.c
+@@ -198,7 +198,6 @@ connection_compatible (NMDevice *device, NMConnection *connection, GError **erro
+ 		if (!g_strcmp0 (mac_address_str, NM_DEVICE_VLAN_GET_PRIVATE (device)->hw_address)) {
+ 			g_set_error (error, NM_DEVICE_VLAN_ERROR, NM_DEVICE_VLAN_ERROR_MAC_MISMATCH,
+ 			             "The hardware address of the device and the connection didn't match.");
+-			g_free (mac_address_str);
+ 		}
+ 		g_free (mac_address_str);
+ 	}
+-- 
+1.8.5.3
+
+
+From e2ba3d96521c032dc88f6e9a8ae77d2c381f3cbc Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Ji=C5=99=C3=AD=20Klime=C5=A1?= <jklimes@redhat.com>
+Date: Tue, 25 Feb 2014 15:27:20 +0100
+Subject: [PATCH 06/10] ifcfg-rh: add missing functionality for reading/writing
+ subject matches
+
+subject-match              - IEEE_8021X_SUBJECT_MATCH
+altsubject-matches         - IEEE_8021X_ALTSUBJECT_MATCHES
+phase2-subject-match       - IEEE_8021X_PHASE2_SUBJECT_MATCH
+phase2-altsubject-matches  - IEEE_8021X_PHASE2_ALTSUBJECT_MATCHES
+
+And a testcase of course.
+
+(cherry picked from commit cb680c5b54fdb5453d04e3dcdb3d33f445f00a95)
+---
+ src/settings/plugins/ifcfg-rh/reader.c             | 46 ++++++++++++++
+ .../ifcfg-rh/tests/network-scripts/Makefile.am     |  1 +
+ .../ifcfg-test-wired-802-1X-subj-matches           | 17 +++++
+ .../plugins/ifcfg-rh/tests/test-ifcfg-rh.c         | 74 ++++++++++++++++++++++
+ src/settings/plugins/ifcfg-rh/writer.c             | 38 ++++++++++-
+ 5 files changed, 175 insertions(+), 1 deletion(-)
+ create mode 100644 src/settings/plugins/ifcfg-rh/tests/network-scripts/ifcfg-test-wired-802-1X-subj-matches
+
+diff --git a/src/settings/plugins/ifcfg-rh/reader.c b/src/settings/plugins/ifcfg-rh/reader.c
+index 4586b5c..e512402 100644
+--- a/src/settings/plugins/ifcfg-rh/reader.c
++++ b/src/settings/plugins/ifcfg-rh/reader.c
+@@ -2720,6 +2720,39 @@ static EAPReader eap_readers[] = {
+ 	{ NULL, NULL }
+ };
+ 
++static void
++read_8021x_list_value (shvarFile *ifcfg,
++                       const char *ifcfg_var_name,
++                       NMSetting8021x *setting,
++                       const char *prop_name)
++{
++	char *value;
++	char **strv, **iter;
++	GSList *gslist = NULL;
++
++	g_return_if_fail (ifcfg != NULL);
++	g_return_if_fail (ifcfg_var_name != NULL);
++	g_return_if_fail (prop_name != NULL);
++
++	value = svGetValue (ifcfg, ifcfg_var_name, FALSE);
++	if (!value)
++		return;
++
++	strv = g_strsplit_set (value, " \t", 0);
++	for (iter = strv; iter && *iter; iter++) {
++		if (*iter[0] == '\0')
++			continue;
++		gslist = g_slist_prepend (gslist, *iter);
++	}
++	if (gslist) {
++		gslist = g_slist_reverse (gslist);
++		g_object_set (setting, prop_name, gslist, NULL);
++		g_slist_free (gslist);
++	}
++	g_strfreev (strv);
++	g_free (value);
++}
++
+ static NMSetting8021x *
+ fill_8021x (shvarFile *ifcfg,
+             const char *file,
+@@ -2796,6 +2829,19 @@ fill_8021x (shvarFile *ifcfg,
+ 		goto error;
+ 	}
+ 
++	value = svGetValue (ifcfg, "IEEE_8021X_SUBJECT_MATCH", FALSE);
++	g_object_set (s_8021x, NM_SETTING_802_1X_SUBJECT_MATCH, value, NULL);
++	g_free (value);
++
++	value = svGetValue (ifcfg, "IEEE_8021X_PHASE2_SUBJECT_MATCH", FALSE);
++	g_object_set (s_8021x, NM_SETTING_802_1X_PHASE2_SUBJECT_MATCH, value, NULL);
++	g_free (value);
++
++	read_8021x_list_value (ifcfg, "IEEE_8021X_ALTSUBJECT_MATCHES",
++	                       s_8021x, NM_SETTING_802_1X_ALTSUBJECT_MATCHES);
++	read_8021x_list_value (ifcfg, "IEEE_8021X_PHASE2_ALTSUBJECT_MATCHES",
++	                       s_8021x, NM_SETTING_802_1X_PHASE2_ALTSUBJECT_MATCHES);
++
+ 	if (list)
+ 		g_strfreev (list);
+ 	if (keys)
+diff --git a/src/settings/plugins/ifcfg-rh/tests/network-scripts/Makefile.am b/src/settings/plugins/ifcfg-rh/tests/network-scripts/Makefile.am
+index 9f0c733..2f24fc3 100644
+--- a/src/settings/plugins/ifcfg-rh/tests/network-scripts/Makefile.am
++++ b/src/settings/plugins/ifcfg-rh/tests/network-scripts/Makefile.am
+@@ -17,6 +17,7 @@ EXTRA_DIST = \
+ 	keys-test-wired-8021x-peap-mschapv2 \
+ 	ifcfg-test-wired-8021x-tls-agent \
+ 	ifcfg-test-wired-8021x-tls-always \
++	ifcfg-test-wired-802-1X-subj-matches \
+ 	ifcfg-test-onboot-no \
+ 	ifcfg-test-noip \
+ 	ifcfg-test-wifi-open \
+diff --git a/src/settings/plugins/ifcfg-rh/tests/network-scripts/ifcfg-test-wired-802-1X-subj-matches b/src/settings/plugins/ifcfg-rh/tests/network-scripts/ifcfg-test-wired-802-1X-subj-matches
+new file mode 100644
+index 0000000..70d69bf
+--- /dev/null
++++ b/src/settings/plugins/ifcfg-rh/tests/network-scripts/ifcfg-test-wired-802-1X-subj-matches
+@@ -0,0 +1,17 @@
++# Intel Corporation 82540EP Gigabit Ethernet Controller (Mobile)
++TYPE=Ethernet
++DEVICE=eth0
++HWADDR=00:11:22:33:44:ee
++BOOTPROTO=dhcp
++ONBOOT=yes
++NM_CONTROLLED=yes
++KEY_MGMT=IEEE8021X
++IEEE_8021X_EAP_METHODS=PEAP
++IEEE_8021X_IDENTITY="Jara Cimrman"
++IEEE_8021X_PEAP_VERSION=1
++IEEE_8021X_INNER_AUTH_METHODS=GTC
++IEEE_8021X_PASSWORD_FLAGS="user ask"
++IEEE_8021X_SUBJECT_MATCH=server1.yourdomain.tld
++IEEE_8021X_ALTSUBJECT_MATCHES="a.yourdomain.tld b.yourdomain.tld c.yourdomain.tld"
++IEEE_8021X_PHASE2_SUBJECT_MATCH=server2.yourdomain.tld
++IEEE_8021X_PHASE2_ALTSUBJECT_MATCHES="x.yourdomain.tld y.yourdomain.tld"
+diff --git a/src/settings/plugins/ifcfg-rh/tests/test-ifcfg-rh.c b/src/settings/plugins/ifcfg-rh/tests/test-ifcfg-rh.c
+index 7c3d989..fc7119d 100644
+--- a/src/settings/plugins/ifcfg-rh/tests/test-ifcfg-rh.c
++++ b/src/settings/plugins/ifcfg-rh/tests/test-ifcfg-rh.c
+@@ -2614,6 +2614,79 @@ test_read_wired_8021x_tls_secret_flags (const char *ifcfg, NMSettingSecretFlags
+ 	g_object_unref (connection);
+ }
+ 
++static void
++test_read_write_802_1X_subj_matches (void)
++{
++	NMConnection *connection, *reread;
++	NMSetting8021x *s_8021x;
++	char *written = NULL;
++	GError *error = NULL;
++	gboolean success = FALSE;
++
++	connection = connection_from_file (TEST_IFCFG_DIR"/network-scripts/ifcfg-test-wired-802-1X-subj-matches",
++	                                   NULL, TYPE_ETHERNET, NULL, NULL,
++	                                   NULL, NULL, NULL, &error, NULL);
++	g_assert_no_error (error);
++	g_assert (connection != NULL);
++
++	/* ===== 802.1x SETTING ===== */
++	s_8021x = nm_connection_get_setting_802_1x (connection);
++	g_assert (s_8021x);
++	g_assert_cmpint (nm_setting_802_1x_get_num_eap_methods (s_8021x), ==, 1);
++	g_assert_cmpstr (nm_setting_802_1x_get_eap_method (s_8021x, 0), ==, "peap");
++	g_assert_cmpstr (nm_setting_802_1x_get_identity (s_8021x), ==, "Jara Cimrman");
++	g_assert_cmpstr (nm_setting_802_1x_get_subject_match (s_8021x), ==, "server1.yourdomain.tld");
++	g_assert_cmpstr (nm_setting_802_1x_get_phase2_subject_match (s_8021x), ==, "server2.yourdomain.tld");
++	g_assert_cmpint (nm_setting_802_1x_get_num_altsubject_matches (s_8021x), ==, 3);
++	g_assert_cmpstr (nm_setting_802_1x_get_altsubject_match (s_8021x, 0), ==, "a.yourdomain.tld");
++	g_assert_cmpstr (nm_setting_802_1x_get_altsubject_match (s_8021x, 1), ==, "b.yourdomain.tld");
++	g_assert_cmpstr (nm_setting_802_1x_get_altsubject_match (s_8021x, 2), ==, "c.yourdomain.tld");
++	g_assert_cmpint (nm_setting_802_1x_get_num_phase2_altsubject_matches (s_8021x), ==, 2);
++	g_assert_cmpstr (nm_setting_802_1x_get_phase2_altsubject_match (s_8021x, 0), ==, "x.yourdomain.tld");
++	g_assert_cmpstr (nm_setting_802_1x_get_phase2_altsubject_match (s_8021x, 1), ==, "y.yourdomain.tld");
++
++	success = writer_new_connection (connection,
++	                                 TEST_SCRATCH_DIR "/network-scripts/",
++	                                 &written,
++	                                 &error);
++	g_assert (success);
++
++	/* re-read the connection for comparison */
++	reread = connection_from_file (written, NULL, TYPE_ETHERNET, NULL, NULL,
++	                               NULL, NULL, NULL, &error, NULL);
++	unlink (written);
++	g_free (written);
++
++	g_assert_no_error (error);
++	g_assert (reread != NULL);
++
++	success = nm_connection_verify (reread, &error);
++	g_assert_no_error (error);
++	g_assert (success);
++
++	success = nm_connection_compare (connection, reread, NM_SETTING_COMPARE_FLAG_EXACT);
++	g_assert (success);
++
++	/* Check 802.1X stuff of the re-read connection. */
++	s_8021x = nm_connection_get_setting_802_1x (reread);
++	g_assert (s_8021x);
++	g_assert_cmpint (nm_setting_802_1x_get_num_eap_methods (s_8021x), ==, 1);
++	g_assert_cmpstr (nm_setting_802_1x_get_eap_method (s_8021x, 0), ==, "peap");
++	g_assert_cmpstr (nm_setting_802_1x_get_identity (s_8021x), ==, "Jara Cimrman");
++	g_assert_cmpstr (nm_setting_802_1x_get_subject_match (s_8021x), ==, "server1.yourdomain.tld");
++	g_assert_cmpstr (nm_setting_802_1x_get_phase2_subject_match (s_8021x), ==, "server2.yourdomain.tld");
++	g_assert_cmpint (nm_setting_802_1x_get_num_altsubject_matches (s_8021x), ==, 3);
++	g_assert_cmpstr (nm_setting_802_1x_get_altsubject_match (s_8021x, 0), ==, "a.yourdomain.tld");
++	g_assert_cmpstr (nm_setting_802_1x_get_altsubject_match (s_8021x, 1), ==, "b.yourdomain.tld");
++	g_assert_cmpstr (nm_setting_802_1x_get_altsubject_match (s_8021x, 2), ==, "c.yourdomain.tld");
++	g_assert_cmpint (nm_setting_802_1x_get_num_phase2_altsubject_matches (s_8021x), ==, 2);
++	g_assert_cmpstr (nm_setting_802_1x_get_phase2_altsubject_match (s_8021x, 0), ==, "x.yourdomain.tld");
++	g_assert_cmpstr (nm_setting_802_1x_get_phase2_altsubject_match (s_8021x, 1), ==, "y.yourdomain.tld");
++
++	g_object_unref (connection);
++	g_object_unref (reread);
++}
++
+ #define TEST_IFCFG_WIFI_OPEN TEST_IFCFG_DIR"/network-scripts/ifcfg-test-wifi-open"
+ 
+ static void
+@@ -12522,6 +12595,7 @@ int main (int argc, char **argv)
+ 	test_read_wired_8021x_tls_secret_flags (TEST_IFCFG_WIRED_8021X_TLS_AGENT, NM_SETTING_SECRET_FLAG_AGENT_OWNED);
+ 	test_read_wired_8021x_tls_secret_flags (TEST_IFCFG_WIRED_8021X_TLS_ALWAYS,
+ 	                                        NM_SETTING_SECRET_FLAG_AGENT_OWNED | NM_SETTING_SECRET_FLAG_NOT_SAVED);
++	g_test_add_func (TPATH "802-1x/subj-mathes", test_read_write_802_1X_subj_matches);
+ 	test_read_wifi_open ();
+ 	test_read_wifi_open_auto ();
+ 	test_read_wifi_open_ssid_hex ();
+diff --git a/src/settings/plugins/ifcfg-rh/writer.c b/src/settings/plugins/ifcfg-rh/writer.c
+index 11e1d7b..4a18d14 100644
+--- a/src/settings/plugins/ifcfg-rh/writer.c
++++ b/src/settings/plugins/ifcfg-rh/writer.c
+@@ -447,10 +447,12 @@ write_8021x_setting (NMConnection *connection,
+                      GError **error)
+ {
+ 	NMSetting8021x *s_8021x;
+-	const char *value;
++	const char *value, *match;
+ 	char *tmp = NULL;
+ 	gboolean success = FALSE;
+ 	GString *phase2_auth;
++	GString *str;
++	guint32 i, num;
+ 
+ 	s_8021x = nm_connection_get_setting_802_1x (connection);
+ 	if (!s_8021x) {
+@@ -545,6 +547,40 @@ write_8021x_setting (NMConnection *connection,
+ 
+ 	g_string_free (phase2_auth, TRUE);
+ 
++	svSetValue (ifcfg, "IEEE_8021X_SUBJECT_MATCH",
++	            nm_setting_802_1x_get_subject_match (s_8021x),
++	            FALSE);
++
++	svSetValue (ifcfg, "IEEE_8021X_PHASE2_SUBJECT_MATCH",
++	            nm_setting_802_1x_get_phase2_subject_match (s_8021x),
++	            FALSE);
++
++	svSetValue (ifcfg, "IEEE_8021X_ALTSUBJECT_MATCHES", NULL, FALSE);
++	str = g_string_new (NULL);
++	num = nm_setting_802_1x_get_num_altsubject_matches (s_8021x);
++	for (i = 0; i < num; i++) {
++		if (i > 0)
++			g_string_append_c (str, ' ');
++		match = nm_setting_802_1x_get_altsubject_match (s_8021x, i);
++		g_string_append (str, match);
++	}
++	if (str->len > 0)
++		svSetValue (ifcfg, "IEEE_8021X_ALTSUBJECT_MATCHES", str->str, FALSE);
++	g_string_free (str, TRUE);
++
++	svSetValue (ifcfg, "IEEE_8021X_PHASE2_ALTSUBJECT_MATCHES", NULL, FALSE);
++	str = g_string_new (NULL);
++	num = nm_setting_802_1x_get_num_phase2_altsubject_matches (s_8021x);
++	for (i = 0; i < num; i++) {
++		if (i > 0)
++			g_string_append_c (str, ' ');
++		match = nm_setting_802_1x_get_phase2_altsubject_match (s_8021x, i);
++		g_string_append (str, match);
++	}
++	if (str->len > 0)
++		svSetValue (ifcfg, "IEEE_8021X_PHASE2_ALTSUBJECT_MATCHES", str->str, FALSE);
++	g_string_free (str, TRUE);
++
+ 	success = write_8021x_certs (s_8021x, FALSE, ifcfg, error);
+ 	if (success) {
+ 		/* phase2/inner certs */
+-- 
+1.8.5.3
+
+
+From b0e648e7f40d16943e2e531e220b926993b2f7f7 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Ji=C5=99=C3=AD=20Klime=C5=A1?= <jklimes@redhat.com>
+Date: Tue, 25 Feb 2014 18:40:13 +0100
+Subject: [PATCH 07/10] libnm-util: fix adding values to
+ 'phase2-altsubject-matches'
+
+It was mixed up with 'altsubject-matches'.
+
+(cherry picked from commit 37894121605014781810add19169ba8cbbe4394c)
+---
+ libnm-util/nm-setting-8021x.c | 11 ++++++-----
+ 1 file changed, 6 insertions(+), 5 deletions(-)
+
+diff --git a/libnm-util/nm-setting-8021x.c b/libnm-util/nm-setting-8021x.c
+index 58b2a44..ae03cd2 100644
+--- a/libnm-util/nm-setting-8021x.c
++++ b/libnm-util/nm-setting-8021x.c
+@@ -638,7 +638,7 @@ nm_setting_802_1x_get_altsubject_match (NMSetting8021x *setting, guint32 i)
+  **/
+ gboolean
+ nm_setting_802_1x_add_altsubject_match (NMSetting8021x *setting,
+-										const char *altsubject_match)
++                                        const char *altsubject_match)
+ {
+ 	NMSetting8021xPrivate *priv;
+ 	GSList *iter;
+@@ -652,7 +652,8 @@ nm_setting_802_1x_add_altsubject_match (NMSetting8021x *setting,
+ 			return FALSE;
+ 	}
+ 
+-	priv->altsubject_matches = g_slist_append (priv->altsubject_matches, g_strdup (altsubject_match));
++	priv->altsubject_matches = g_slist_append (priv->altsubject_matches,
++	                                           g_strdup (altsubject_match));
+ 	g_object_notify (G_OBJECT (setting), NM_SETTING_802_1X_ALTSUBJECT_MATCHES);
+ 	return TRUE;
+ }
+@@ -1184,7 +1185,7 @@ nm_setting_802_1x_get_phase2_altsubject_match (NMSetting8021x *setting, guint32
+  **/
+ gboolean
+ nm_setting_802_1x_add_phase2_altsubject_match (NMSetting8021x *setting,
+-											   const char *phase2_altsubject_match)
++                                               const char *phase2_altsubject_match)
+ {
+ 	NMSetting8021xPrivate *priv;
+ 	GSList *iter;
+@@ -1198,8 +1199,8 @@ nm_setting_802_1x_add_phase2_altsubject_match (NMSetting8021x *setting,
+ 			return FALSE;
+ 	}
+ 
+-	priv->phase2_altsubject_matches = g_slist_append (priv->altsubject_matches,
+-													  g_strdup (phase2_altsubject_match));
++	priv->phase2_altsubject_matches = g_slist_append (priv->phase2_altsubject_matches,
++	                                                  g_strdup (phase2_altsubject_match));
+ 	g_object_notify (G_OBJECT (setting), NM_SETTING_802_1X_PHASE2_ALTSUBJECT_MATCHES);
+ 	return TRUE;
+ }
+-- 
+1.8.5.3
+
+
+From 01198ca5c733624d6a4238e00b067a173679588a Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Ji=C5=99=C3=AD=20Klime=C5=A1?= <jklimes@redhat.com>
+Date: Tue, 25 Feb 2014 15:52:45 +0100
+Subject: [PATCH 08/10] libnm-util: fix verify_identity() in '802-1x' setting
+
+We need to return FALSE on error, otherwise we pile GErrors and assert in
+nm_setting_verify().
+
+(cherry picked from commit 68066b40f2704ee069201cfa7f9c0f3b976e690f)
+---
+ libnm-util/nm-setting-8021x.c | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/libnm-util/nm-setting-8021x.c b/libnm-util/nm-setting-8021x.c
+index ae03cd2..7777e02 100644
+--- a/libnm-util/nm-setting-8021x.c
++++ b/libnm-util/nm-setting-8021x.c
+@@ -2363,12 +2363,14 @@ verify_identity (NMSetting8021x *self, gboolean phase2, GError **error)
+ 		                     NM_SETTING_802_1X_ERROR_MISSING_PROPERTY,
+ 		                     _("property is missing"));
+ 		g_prefix_error (error, "%s.%s: ", NM_SETTING_802_1X_SETTING_NAME, NM_SETTING_802_1X_IDENTITY);
++		return FALSE;
+ 	} else if (!strlen (priv->identity)) {
+ 		g_set_error_literal (error,
+ 		                     NM_SETTING_802_1X_ERROR,
+ 		                     NM_SETTING_802_1X_ERROR_INVALID_PROPERTY,
+ 		                     _("property is empty"));
+ 		g_prefix_error (error, "%s.%s: ", NM_SETTING_802_1X_SETTING_NAME, NM_SETTING_802_1X_IDENTITY);
++		return FALSE;
+ 	}
+ 
+ 	return TRUE;
+-- 
+1.8.5.3
+
+
+From 044309eae71b908cdc01852e22ed2a5127293c40 Mon Sep 17 00:00:00 2001
+From: Thomas Haller <thaller@redhat.com>
+Date: Tue, 4 Mar 2014 21:44:07 +0100
+Subject: [PATCH 09/10] platform: fix converting address flags in
+ nm_platform_ip6_address_to_string()
+
+Signed-off-by: Thomas Haller <thaller@redhat.com>
+(cherry picked from commit eca6a49e2d91c21ff9f525dd34259e3ad6c12272)
+---
+ src/platform/nm-platform.c | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/src/platform/nm-platform.c b/src/platform/nm-platform.c
+index 97540fc..0477477 100644
+--- a/src/platform/nm-platform.c
++++ b/src/platform/nm-platform.c
+@@ -1791,11 +1791,11 @@ nm_platform_ip6_address_to_string (const NMPlatformIP6Address *address)
+ 	 * These two flags were introduced together with the extended ifa_flags,
+ 	 * so, check for that.
+ 	 **/
+-	if ((address->flags && IFA_F_MANAGETEMPADDR) & !nm_platform_check_support_libnl_extended_ifa_flags ()) {
++	if ((address->flags & IFA_F_MANAGETEMPADDR) && !nm_platform_check_support_libnl_extended_ifa_flags ()) {
+ 		strncat (s_flags, s_flags[0] ? "," IFA_F_MANAGETEMPADDR_STR : IFA_F_MANAGETEMPADDR_STR,
+ 		         sizeof (s_flags) - strlen (s_flags) - 1);
+ 	}
+-	if ((address->flags && IFA_F_NOPREFIXROUTE) & !nm_platform_check_support_libnl_extended_ifa_flags ()) {
++	if ((address->flags & IFA_F_NOPREFIXROUTE) && !nm_platform_check_support_libnl_extended_ifa_flags ()) {
+ 		strncat (s_flags, s_flags[0] ? "," IFA_F_NOPREFIXROUTE_STR : IFA_F_NOPREFIXROUTE_STR,
+ 		         sizeof (s_flags) - strlen (s_flags) - 1);
+ 	}
+-- 
+1.8.5.3
+
+
+From 917b799a1ce86963d41834c3bd5d24f945855ec0 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Ji=C5=99=C3=AD=20Klime=C5=A1?= <jklimes@redhat.com>
+Date: Tue, 4 Mar 2014 16:51:01 +0100
+Subject: [PATCH 10/10] policy: fix crash caused by calling functions on
+ connection==NULL
+
+Crash appeared in:
+nm_settings_connection_set_autoconnect_blocked_reason()
+
+(partially cherry picked from commit b8915dae3c5d2a077a0615941cfa363c0efcb428)
+---
+ src/nm-policy.c | 9 +++++----
+ 1 file changed, 5 insertions(+), 4 deletions(-)
+
+diff --git a/src/nm-policy.c b/src/nm-policy.c
+index a5a372a..408056e 100644
+--- a/src/nm-policy.c
++++ b/src/nm-policy.c
+@@ -1307,7 +1307,7 @@ reset_connections_retries (gpointer user_data)
+ static void schedule_activate_all (NMPolicy *policy);
+ 
+ static void
+-activate_slave_connections (NMPolicy *policy, NMConnection *connection,
++activate_slave_connections (NMPolicy *policy,
+                             NMDevice *device)
+ {
+ 	NMPolicyPrivate *priv = NM_POLICY_GET_PRIVATE (policy);
+@@ -1414,7 +1414,7 @@ device_state_changed (NMDevice *device,
+ 	const char *ip_iface = nm_device_get_ip_iface (device);
+ 	NMIP4Config *ip4_config;
+ 	NMIP6Config *ip6_config;
+-	NMSettingConnection *s_con;
++	NMSettingConnection *s_con = NULL;
+ 
+ 	if (connection)
+ 		g_object_set_data (G_OBJECT (connection), FAILURE_REASON_TAG, GUINT_TO_POINTER (0));
+@@ -1506,10 +1506,11 @@ device_state_changed (NMDevice *device,
+ 	case NM_DEVICE_STATE_PREPARE:
+ 		/* Reset auto-connect retries of all slaves and schedule them for
+ 		 * activation. */
+-		activate_slave_connections (policy, connection, device);
++		activate_slave_connections (policy, device);
+ 		break;
+ 	case NM_DEVICE_STATE_SECONDARIES:
+-		s_con = nm_connection_get_setting_connection (connection);
++		if (connection)
++			s_con = nm_connection_get_setting_connection (connection);
+ 		if (s_con && nm_setting_connection_get_num_secondaries (s_con) > 0) {
+ 			/* Make routes and DNS up-to-date before activating dependent connections */
+ 			update_routing_and_dns (policy, FALSE);
+-- 
+1.8.5.3
+

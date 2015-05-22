@@ -1,0 +1,70 @@
+From 5c1dee10cde3cc7cf74718650702dd124d46aa75 Mon Sep 17 00:00:00 2001
+From: Dan Williams <dcbw@redhat.com>
+Date: Sun, 9 Feb 2014 03:31:21 -0600
+Subject: [PATCH] mobile: only change state to NEED_AUTH during activation (rh
+ #1058308)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Auth requests only happen during activation and there's no need to
+request secrets at any other time.  Ensure that the device state
+won't change to NEED_AUTH except when activating.
+
+(There's a case in NMModemBroadband where set_mm_enabled()
+when the modem is locked may cause this, but we'll solve this
+a different way later.)
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1058308
+
+Signed-off-by: Jiří Klimeš <jklimes@redhat.com>
+---
+ src/devices/nm-device-bt.c    | 10 +++++++++-
+ src/devices/nm-device-modem.c | 10 +++++++++-
+ 2 files changed, 18 insertions(+), 2 deletions(-)
+
+diff --git a/src/devices/nm-device-bt.c b/src/devices/nm-device-bt.c
+index e22c96e..3e5b693 100644
+--- a/src/devices/nm-device-bt.c
++++ b/src/devices/nm-device-bt.c
+@@ -423,7 +423,15 @@ ppp_failed (NMModem *modem, NMDeviceStateReason reason, gpointer user_data)
+ static void
+ modem_auth_requested (NMModem *modem, gpointer user_data)
+ {
+-	nm_device_state_changed (NM_DEVICE (user_data),
++	NMDevice *device = NM_DEVICE (user_data);
++
++	/* Auth requests (PIN, PAP/CHAP passwords, etc) only get handled
++	 * during activation.
++	 */
++	if (!nm_device_is_activating (device))
++		return;
++
++	nm_device_state_changed (device,
+ 	                         NM_DEVICE_STATE_NEED_AUTH,
+ 	                         NM_DEVICE_STATE_REASON_NONE);
+ }
+diff --git a/src/devices/nm-device-modem.c b/src/devices/nm-device-modem.c
+index 0bed60c..e047c03 100644
+--- a/src/devices/nm-device-modem.c
++++ b/src/devices/nm-device-modem.c
+@@ -113,7 +113,15 @@ modem_prepare_result (NMModem *modem,
+ static void
+ modem_auth_requested (NMModem *modem, gpointer user_data)
+ {
+-	nm_device_state_changed (NM_DEVICE (user_data),
++	NMDevice *device = NM_DEVICE (user_data);
++
++	/* Auth requests (PIN, PAP/CHAP passwords, etc) only get handled
++	 * during activation.
++	 */
++	if (!nm_device_is_activating (device))
++		return;
++
++	nm_device_state_changed (device,
+ 	                         NM_DEVICE_STATE_NEED_AUTH,
+ 	                         NM_DEVICE_STATE_REASON_NONE);
+ }
+-- 
+1.7.11.7
+

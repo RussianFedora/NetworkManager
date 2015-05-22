@@ -1,0 +1,1739 @@
+From 9989350adbe25dccb716f8df41ac915c1e262304 Mon Sep 17 00:00:00 2001
+From: Thomas Haller <thaller@redhat.com>
+Date: Sat, 15 Feb 2014 13:20:40 +0100
+Subject: [PATCH 01/14] fix several compile errors
+
+Signed-off-by: Thomas Haller <thaller@redhat.com>
+---
+ src/devices/nm-device.c                   | 2 +-
+ src/settings/nm-system-config-interface.c | 2 +-
+ 2 files changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/src/devices/nm-device.c b/src/devices/nm-device.c
+index c3b3f21..92de1db 100644
+--- a/src/devices/nm-device.c
++++ b/src/devices/nm-device.c
+@@ -6925,7 +6925,7 @@ nm_device_add_pending_action (NMDevice *device, const char *action)
+ 			             nm_device_get_iface (device),
+ 			             g_slist_length (priv->pending_actions),
+ 			             action);
+-			g_return_val_if_reached (FALSE);
++			g_return_if_reached ();
+ 		}
+ 	}
+ 
+diff --git a/src/settings/nm-system-config-interface.c b/src/settings/nm-system-config-interface.c
+index 18457ea..fd36fc4 100644
+--- a/src/settings/nm-system-config-interface.c
++++ b/src/settings/nm-system-config-interface.c
+@@ -141,7 +141,7 @@ gboolean
+ nm_system_config_interface_load_connection (NMSystemConfigInterface *config,
+                                             const char *filename)
+ {
+-	g_return_val_if_fail (config != NULL, NULL);
++	g_return_val_if_fail (config != NULL, FALSE);
+ 
+ 	if (NM_SYSTEM_CONFIG_INTERFACE_GET_INTERFACE (config)->load_connection)
+ 		return NM_SYSTEM_CONFIG_INTERFACE_GET_INTERFACE (config)->load_connection (config, filename);
+-- 
+1.8.5.3
+
+
+From 7ffd758bf4e0d57a240ec4031bf987b397950463 Mon Sep 17 00:00:00 2001
+From: Thomas Haller <thaller@redhat.com>
+Date: Tue, 21 Jan 2014 13:07:06 +0100
+Subject: [PATCH 02/14] core: add nm_utils_ascii_str_to_int64() function
+
+(cherry picked from commit 63075d98a59270ffcb89bb556b6ee5efc14eef0f)
+
+Signed-off-by: Thomas Haller <thaller@redhat.com>
+---
+ src/NetworkManagerUtils.c | 60 +++++++++++++++++++++++++++++++++++++
+ src/NetworkManagerUtils.h |  2 ++
+ src/tests/Makefile.am     | 10 +++++++
+ src/tests/test-general.c  | 76 +++++++++++++++++++++++++++++++++++++++++++++++
+ 4 files changed, 148 insertions(+)
+ create mode 100644 src/tests/test-general.c
+
+diff --git a/src/NetworkManagerUtils.c b/src/NetworkManagerUtils.c
+index bc3d1b2..d0937fb 100644
+--- a/src/NetworkManagerUtils.c
++++ b/src/NetworkManagerUtils.c
+@@ -644,3 +644,63 @@ nm_utils_new_vlan_name (const char *parent_iface, guint32 vlan_id)
+ 	return g_strdup_printf ("%s.%d", parent_iface, vlan_id);
+ }
+ 
++/* nm_utils_ascii_str_to_int64:
++ *
++ * A wrapper for g_ascii_strtoll, that checks whether the whole string
++ * can be successfully converted to a number and is within a given
++ * range. On any error, @fallback will be returned and @errno will be set
++ * to a non-zero value. Check @errno for errors. Any trailing or leading
++ * (ascii) white space is ignored and the functions is locale independent.
++ *
++ * The function is guaranteed to return a value between @min and @max
++ * (included) or @fallback. Also, the parsing is rather strict, it does
++ * not allow for any unrecognized characters, except leading and trailing
++ * white space.
++ **/
++gint64
++nm_utils_ascii_str_to_int64 (const char *str, guint base, gint64 min, gint64 max, gint64 fallback)
++{
++	gint64 v;
++	char *end;
++	char *str_free = NULL;
++
++	if (str) {
++		while (str[0] && g_ascii_isspace (str[0]))
++			str++;
++	}
++	if (!str || !str[0]) {
++		errno = EINVAL;
++		return fallback;
++	}
++
++	if (g_ascii_isspace (str[strlen (str) - 1])) {
++		str_free = g_strdup (str);
++		g_strstrip (str_free);
++		str = str_free;
++	}
++
++	errno = 0;
++	v = g_ascii_strtoll (str, &end, base);
++
++	if (errno != 0) {
++		g_free (str_free);
++		return fallback;
++	}
++
++	if (end[0] != 0) {
++		g_free (str_free);
++		errno = EINVAL;
++		return fallback;
++	}
++
++	g_free (str_free);
++	if (v > max || v < min) {
++		errno = ERANGE;
++		return fallback;
++	}
++
++	return v;
++}
++
++
++
+diff --git a/src/NetworkManagerUtils.h b/src/NetworkManagerUtils.h
+index 819cb07..0904c51 100644
+--- a/src/NetworkManagerUtils.h
++++ b/src/NetworkManagerUtils.h
+@@ -91,4 +91,6 @@ void nm_utils_complete_generic (NMConnection *connection,
+ 
+ char *nm_utils_new_vlan_name (const char *parent_iface, guint32 vlan_id);
+ 
++gint64 nm_utils_ascii_str_to_int64 (const char *str, guint base, gint64 min, gint64 max, gint64 fallback);
++
+ #endif /* NETWORK_MANAGER_UTILS_H */
+diff --git a/src/tests/Makefile.am b/src/tests/Makefile.am
+index 3e485fd..2b42d2c 100644
+--- a/src/tests/Makefile.am
++++ b/src/tests/Makefile.am
+@@ -12,6 +12,7 @@ AM_CPPFLAGS = \
+ 
+ noinst_PROGRAMS = \
+ 	test-dhcp-options \
++	test-general \
+ 	test-policy-hosts \
+ 	test-wifi-ap-utils \
+ 	test-ip4-config \
+@@ -62,6 +63,14 @@ test_ip6_config_SOURCES = \
+ test_ip6_config_LDADD = \
+ 	$(top_builddir)/src/libNetworkManager.la
+ 
++####### general test #######
++
++test_general_SOURCES = \
++	test-general.c
++
++test_general_LDADD = \
++	$(top_builddir)/src/libNetworkManager.la
++
+ ####### secret agent interface test #######
+ 
+ EXTRA_DIST = test-secret-agent.py
+@@ -74,4 +83,5 @@ check-local: test-dhcp-options test-policy-hosts test-wifi-ap-utils test-ip4-con
+ 	$(abs_builddir)/test-wifi-ap-utils
+ 	$(abs_builddir)/test-ip4-config
+ 	$(abs_builddir)/test-ip6-config
++	$(abs_builddir)/test-general
+ 
+diff --git a/src/tests/test-general.c b/src/tests/test-general.c
+new file mode 100644
+index 0000000..649653c
+--- /dev/null
++++ b/src/tests/test-general.c
+@@ -0,0 +1,76 @@
++/* -*- Mode: C; tab-width: 4; indent-tabs-mode: t; c-basic-offset: 4 -*- */
++/*
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 2, or (at your option)
++ * any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License along
++ * with this program; if not, write to the Free Software Foundation, Inc.,
++ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
++ *
++ * Copyright (C) 2014 Red Hat, Inc.
++ *
++ */
++
++#include <glib.h>
++#include <string.h>
++#include <errno.h>
++
++#include "NetworkManagerUtils.h"
++
++
++static void
++test_nm_utils_ascii_str_to_int64_do (const char *str, guint base, gint64 min,
++                                     gint64 max, gint64 fallback, int exp_errno,
++                                     gint64 exp_val)
++{
++	gint64 v;
++
++	errno = 0;
++	v = nm_utils_ascii_str_to_int64 (str, base, min, max, fallback);
++	g_assert_cmpint (errno, ==, exp_errno);
++	g_assert_cmpint (v, ==, exp_val);
++}
++
++static void
++test_nm_utils_ascii_str_to_int64 (void)
++{
++	test_nm_utils_ascii_str_to_int64_do ("4711", 10, 0, 10000, -1, 0, 4711);
++	test_nm_utils_ascii_str_to_int64_do ("", 10, 0, 10000, -1, EINVAL, -1);
++	test_nm_utils_ascii_str_to_int64_do (NULL, 10, 0, 10000, -1, EINVAL, -1);
++	test_nm_utils_ascii_str_to_int64_do (" 1x ", 10, 0, 10000, -1, EINVAL, -1);
++	test_nm_utils_ascii_str_to_int64_do (" 10000 ", 10, 0, 10000, -1, 0, 10000);
++	test_nm_utils_ascii_str_to_int64_do (" 10001 ", 10, 0, 10000, -1, ERANGE, -1);
++	test_nm_utils_ascii_str_to_int64_do (" 0xFF ", 16, 0, 10000, -1, 0, 255);
++	test_nm_utils_ascii_str_to_int64_do (" FF ", 16, 0, 10000, -1, 0, 255);
++	test_nm_utils_ascii_str_to_int64_do (" FF ", 10, 0, 10000, -2, EINVAL, -2);
++	test_nm_utils_ascii_str_to_int64_do (" 9223372036854775807 ", 10, 0, G_MAXINT64, -2, 0, G_MAXINT64);
++	test_nm_utils_ascii_str_to_int64_do (" 0x7FFFFFFFFFFFFFFF ", 16, 0, G_MAXINT64, -2, 0, G_MAXINT64);
++	test_nm_utils_ascii_str_to_int64_do (" 7FFFFFFFFFFFFFFF ", 16, 0, G_MAXINT64, -2, 0, G_MAXINT64);
++	test_nm_utils_ascii_str_to_int64_do (" 9223372036854775808 ", 10, 0, G_MAXINT64, -2, ERANGE, -2);
++	test_nm_utils_ascii_str_to_int64_do (" -9223372036854775808 ", 10, G_MININT64, 0, -2, 0, G_MININT64);
++	test_nm_utils_ascii_str_to_int64_do (" -9223372036854775808 ", 10, G_MININT64+1, 0, -2, ERANGE, -2);
++	test_nm_utils_ascii_str_to_int64_do (" -9223372036854775809 ", 10, G_MININT64, 0, -2, ERANGE, -2);
++	test_nm_utils_ascii_str_to_int64_do ("\r\n\t10000\t\n\t\n", 10, 0, 10000, -1, 0, 10000);
++}
++
++/*******************************************/
++
++int
++main (int argc, char **argv)
++{
++	g_test_init (&argc, &argv, NULL);
++
++	g_type_init ();
++
++	g_test_add_func ("/general/nm_utils_ascii_str_to_int64", test_nm_utils_ascii_str_to_int64);
++
++	return g_test_run ();
++}
++
+-- 
+1.8.5.3
+
+
+From 04320290b6c1dfb7f6ac0b8c7f9b71cffbc5730b Mon Sep 17 00:00:00 2001
+From: Dan Winship <danw@gnome.org>
+Date: Mon, 14 Oct 2013 10:38:56 -0400
+Subject: [PATCH 03/14] core: add function nm_utils_get_ip_config_method()
+
+Add nm_utils_get_ip_config_method(), which returns the correct
+IP config method for a connection, whether the connection has IP4 and
+IP6 settings objects or not, and use that to keep some more of the
+simplifications from the earlier patch.
+
+This is a partial backport of an upstream commit.
+
+(cherry picked from commit f03635e5ac829d4fc896573f2f3c6969b9d5a2e2)
+---
+ src/NetworkManagerUtils.c | 43 +++++++++++++++++++++++++++++++++++++++++++
+ src/NetworkManagerUtils.h |  3 +++
+ 2 files changed, 46 insertions(+)
+
+diff --git a/src/NetworkManagerUtils.c b/src/NetworkManagerUtils.c
+index d0937fb..bac5322 100644
+--- a/src/NetworkManagerUtils.c
++++ b/src/NetworkManagerUtils.c
+@@ -576,6 +576,49 @@ get_new_connection_name (const GSList *existing,
+ 	return cname;
+ }
+ 
++const char *
++nm_utils_get_ip_config_method (NMConnection *connection,
++                               GType         ip_setting_type)
++{
++	NMSettingConnection *s_con;
++	NMSettingIP4Config *s_ip4;
++	NMSettingIP6Config *s_ip6;
++	const char *method;
++
++	s_con = nm_connection_get_setting_connection (connection);
++
++	if (ip_setting_type == NM_TYPE_SETTING_IP4_CONFIG) {
++		g_return_val_if_fail (s_con != NULL, NM_SETTING_IP4_CONFIG_METHOD_AUTO);
++
++		if (nm_setting_connection_get_master (s_con))
++			return NM_SETTING_IP4_CONFIG_METHOD_DISABLED;
++		else {
++			s_ip4 = nm_connection_get_setting_ip4_config (connection);
++			g_return_val_if_fail (s_ip4 != NULL, NM_SETTING_IP4_CONFIG_METHOD_AUTO);
++			method = nm_setting_ip4_config_get_method (s_ip4);
++			g_return_val_if_fail (method != NULL, NM_SETTING_IP4_CONFIG_METHOD_AUTO);
++
++			return method;
++		}
++
++	} else if (ip_setting_type == NM_TYPE_SETTING_IP6_CONFIG) {
++		g_return_val_if_fail (s_con != NULL, NM_SETTING_IP6_CONFIG_METHOD_AUTO);
++
++		if (nm_setting_connection_get_master (s_con))
++			return NM_SETTING_IP6_CONFIG_METHOD_IGNORE;
++		else {
++			s_ip6 = nm_connection_get_setting_ip6_config (connection);
++			g_return_val_if_fail (s_ip6 != NULL, NM_SETTING_IP6_CONFIG_METHOD_AUTO);
++			method = nm_setting_ip6_config_get_method (s_ip6);
++			g_return_val_if_fail (method != NULL, NM_SETTING_IP6_CONFIG_METHOD_AUTO);
++
++			return method;
++		}
++
++	} else
++		g_assert_not_reached ();
++}
++
+ void
+ nm_utils_complete_generic (NMConnection *connection,
+                            const char *ctype,
+diff --git a/src/NetworkManagerUtils.h b/src/NetworkManagerUtils.h
+index 0904c51..a15f74f 100644
+--- a/src/NetworkManagerUtils.h
++++ b/src/NetworkManagerUtils.h
+@@ -82,6 +82,9 @@ gboolean nm_utils_get_proc_sys_net_value_with_bounds (const char *path,
+                                                       gint32 valid_min,
+                                                       gint32 valid_max);
+ 
++const char *nm_utils_get_ip_config_method (NMConnection *connection,
++                                           GType         ip_setting_type);
++
+ void nm_utils_complete_generic (NMConnection *connection,
+                                 const char *ctype,
+                                 const GSList *existing,
+-- 
+1.8.5.3
+
+
+From 32602714f0e06301d68be71daf38c42215b46944 Mon Sep 17 00:00:00 2001
+From: Thomas Haller <thaller@redhat.com>
+Date: Mon, 6 Jan 2014 19:59:17 +0100
+Subject: [PATCH 04/14] core: add function nm_platform_sysctl_get_int32()
+
+This is a partial backport of an upstream commit.
+
+(cherry picked from commit 2b87dbb2a990fa6aee9ca1e431a2d1ee2af453e9)
+
+Signed-off-by: Thomas Haller <thaller@redhat.com>
+---
+ src/platform/nm-platform.c | 32 ++++++++++++++++++++++++++++++++
+ src/platform/nm-platform.h |  1 +
+ 2 files changed, 33 insertions(+)
+
+diff --git a/src/platform/nm-platform.c b/src/platform/nm-platform.c
+index 06cdec0..cf21e5c 100644
+--- a/src/platform/nm-platform.c
++++ b/src/platform/nm-platform.c
+@@ -27,6 +27,7 @@
+ #include <netlink/route/addr.h>
+ 
+ #include "nm-platform.h"
++#include "NetworkManagerUtils.h"
+ #include "nm-logging.h"
+ #include "nm-enum-types.h"
+ 
+@@ -243,6 +244,37 @@ nm_platform_sysctl_get (const char *path)
+ 	return klass->sysctl_get (platform, path);
+ }
+ 
++/**
++ * nm_platform_sysctl_get_int32:
++ * @path: Absolute path to sysctl
++ * @fallback: default value, if the content of path could not be read
++ * as decimal integer.
++ *
++ * Returns: contents of the sysctl file parsed as s32 integer, or
++ * @fallback on error. Also, on error, @errno will be set to a non-zero
++ * value.
++ */
++gint32
++nm_platform_sysctl_get_int32 (const char *path, gint32 fallback)
++{
++	char *value = NULL;
++	gint32 ret;
++
++	g_return_val_if_fail (path, fallback);
++
++	if (path)
++		value = nm_platform_sysctl_get (path);
++
++	if (!value) {
++		errno = EINVAL;
++		return fallback;
++	}
++
++	ret = nm_utils_ascii_str_to_int64 (value, 10, G_MININT32, G_MAXINT32, fallback);
++	g_free (value);
++	return ret;
++}
++
+ /******************************************************************/
+ 
+ /**
+diff --git a/src/platform/nm-platform.h b/src/platform/nm-platform.h
+index 58f51ce..d4864d0 100644
+--- a/src/platform/nm-platform.h
++++ b/src/platform/nm-platform.h
+@@ -349,6 +349,7 @@ void nm_platform_query_devices (void);
+ 
+ gboolean nm_platform_sysctl_set (const char *path, const char *value);
+ char *nm_platform_sysctl_get (const char *path);
++gint32 nm_platform_sysctl_get_int32 (const char *path, gint32 fallback);
+ 
+ GArray *nm_platform_link_get_all (void);
+ gboolean nm_platform_dummy_add (const char *name);
+-- 
+1.8.5.3
+
+
+From e72164b28a31355fb71b798b6197113d64f94335 Mon Sep 17 00:00:00 2001
+From: Thomas Haller <thaller@redhat.com>
+Date: Fri, 13 Dec 2013 20:12:57 +0100
+Subject: [PATCH 05/14] core: fix NMDevice.ip6_use_tempaddr to avoid buffer
+ overrun for zero char in config file
+
+(cherry picked from commit bb9deec9ef98ede632e69f8e5a6e017070f714a8)
+
+Signed-off-by: Thomas Haller <thaller@redhat.com>
+---
+ src/devices/nm-device.c | 7 +++----
+ 1 file changed, 3 insertions(+), 4 deletions(-)
+
+diff --git a/src/devices/nm-device.c b/src/devices/nm-device.c
+index 92de1db..e32050f 100644
+--- a/src/devices/nm-device.c
++++ b/src/devices/nm-device.c
+@@ -3272,7 +3272,6 @@ static int
+ ip6_use_tempaddr (void)
+ {
+ 	char *contents = NULL;
+-	gsize len = 0;
+ 	const char *group_name = "[forged_group]\n";
+ 	char *sysctl_data = NULL;
+ 	GKeyFile *keyfile;
+@@ -3280,15 +3279,15 @@ ip6_use_tempaddr (void)
+ 	int tmp, ret = -1;
+ 
+ 	/* Read file contents to a string. */
+-	if (!g_file_get_contents ("/etc/sysctl.conf", &contents, &len, NULL))
+-		if (!g_file_get_contents ("/lib/sysctl.d/sysctl.conf", &contents, &len, NULL))
++	if (!g_file_get_contents ("/etc/sysctl.conf", &contents, NULL, NULL))
++		if (!g_file_get_contents ("/lib/sysctl.d/sysctl.conf", &contents, NULL, NULL))
+ 			return -1;
+ 
+ 	/* Prepend a group so that we can use GKeyFile parser. */
+ 	sysctl_data = g_strdup_printf ("%s%s", group_name, contents);
+ 
+ 	keyfile = g_key_file_new ();
+-	if (!g_key_file_load_from_data (keyfile, sysctl_data, len + strlen (group_name), G_KEY_FILE_NONE, NULL))
++	if (!g_key_file_load_from_data (keyfile, sysctl_data, -1, G_KEY_FILE_NONE, NULL))
+ 		goto done;
+ 
+ 	tmp = g_key_file_get_integer (keyfile, "forged_group", "net.ipv6.conf.default.use_tempaddr", &error);
+-- 
+1.8.5.3
+
+
+From 3edb66027825c327ba0b24339505d99c0432623d Mon Sep 17 00:00:00 2001
+From: Thomas Haller <thaller@redhat.com>
+Date: Thu, 7 Nov 2013 20:38:08 +0100
+Subject: [PATCH 06/14] core: IPv6 mode link-local must not behave like auto
+ (bgo#706618, bgo#707155)
+
+In act_stage3_ip6_config_start, for IPv6 mode link-local, we check
+if there is already an IPv6 address configured. If yes, we are
+already done.
+
+For now, as current workaround, if the LL does not exist, we
+NM_ACT_STAGE_RETURN_STOP.
+
+Later, we will POSTPONE and wait a timeout until we see a LL address
+that is no longer TENTATIVE. The same should be done for method auto,
+so that the device is usable to send router solitations (bgo#707155).
+
+https://bugzilla.gnome.org/show_bug.cgi?id=707155
+https://bugzilla.gnome.org/show_bug.cgi?id=706618
+
+(cherry picked from commit 10bd060076befc4b711125a19831d323f9ea8595)
+
+Signed-off-by: Thomas Haller <thaller@redhat.com>
+---
+ src/devices/nm-device.c | 30 ++++++++++++++++++++++++++++--
+ 1 file changed, 28 insertions(+), 2 deletions(-)
+
+diff --git a/src/devices/nm-device.c b/src/devices/nm-device.c
+index e32050f..152814c 100644
+--- a/src/devices/nm-device.c
++++ b/src/devices/nm-device.c
+@@ -3265,6 +3265,31 @@ addrconf6_cleanup (NMDevice *self)
+ 
+ /******************************************/
+ 
++static int
++linklocal6_start (NMDevice *self)
++{
++	NMDevicePrivate *priv = NM_DEVICE_GET_PRIVATE (self);
++	int i;
++
++	if (priv->ip6_config) {
++		for (i = 0; i < nm_ip6_config_get_num_addresses (priv->ip6_config); i++) {
++			const NMPlatformIP6Address *addr = nm_ip6_config_get_address (priv->ip6_config, i);
++
++			if (addr->plen == 128 && IN6_IS_ADDR_LINKLOCAL (&addr->address)) {
++				/* FIXME: only accept the address if it is no longer TENTATIVE */
++				return NM_ACT_STAGE_RETURN_SUCCESS;
++			}
++		}
++	}
++
++	/* FIXME: we should NM_ACT_STAGE_RETURN_POSTPONE and wait until with timeout
++	 * we get a link local address that is no longer TENTATIVE. */
++	nm_log_warn (LOGD_DEVICE, "[%s] starting IPv6 with mode 'link-local', but the device has no link-local addresses configured.",
++	             nm_device_get_iface (self));
++
++	return NM_ACT_STAGE_RETURN_STOP;
++}
++
+ /* Get net.ipv6.conf.default.use_tempaddr value from /etc/sysctl.conf or
+  * /lib/sysctl.d/sysctl.conf
+  */
+@@ -3387,13 +3412,14 @@ act_stage3_ip6_config_start (NMDevice *self,
+ 
+ 	priv->dhcp6_mode = NM_RDISC_DHCP_LEVEL_NONE;
+ 
+-	if (   strcmp (method, NM_SETTING_IP6_CONFIG_METHOD_AUTO) == 0
+-	    || strcmp (method, NM_SETTING_IP6_CONFIG_METHOD_LINK_LOCAL) == 0) {
++	if (   strcmp (method, NM_SETTING_IP6_CONFIG_METHOD_AUTO) == 0) {
+ 		if (!addrconf6_start (self)) {
+ 			/* IPv6 might be disabled; allow IPv4 to proceed */
+ 			ret = NM_ACT_STAGE_RETURN_STOP;
+ 		} else
+ 			ret = NM_ACT_STAGE_RETURN_POSTPONE;
++	} else if (strcmp (method, NM_SETTING_IP6_CONFIG_METHOD_LINK_LOCAL) == 0) {
++		ret = linklocal6_start (self);
+ 	} else if (strcmp (method, NM_SETTING_IP6_CONFIG_METHOD_DHCP) == 0) {
+ 		/* Router advertisements shouldn't be used in pure DHCP mode */
+ 		if (priv->ip6_accept_ra_path)
+-- 
+1.8.5.3
+
+
+From e1d059d1a2d359504900d14e9d8acf0307187e6c Mon Sep 17 00:00:00 2001
+From: Dan Williams <dcbw@redhat.com>
+Date: Thu, 7 Nov 2013 21:30:25 -0600
+Subject: [PATCH 07/14] core: fix hanlding of IPv6LL address if interface
+ already has one
+
+act_stage3_ip6_config_start() expects a non-NULL NMIP6Config if the
+sub-method returns NM_ACT_STAGE_RETURN_SUCCESS.
+
+(cherry picked from commit 72063064567312ff6412c6d9996e8a6684df3f1d)
+---
+ src/devices/nm-device.c | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/src/devices/nm-device.c b/src/devices/nm-device.c
+index 152814c..4384f6a 100644
+--- a/src/devices/nm-device.c
++++ b/src/devices/nm-device.c
+@@ -3420,6 +3420,11 @@ act_stage3_ip6_config_start (NMDevice *self,
+ 			ret = NM_ACT_STAGE_RETURN_POSTPONE;
+ 	} else if (strcmp (method, NM_SETTING_IP6_CONFIG_METHOD_LINK_LOCAL) == 0) {
+ 		ret = linklocal6_start (self);
++		if (ret == NM_ACT_STAGE_RETURN_SUCCESS) {
++			/* New blank config; LL address is already in priv->ext_ip6_config */
++			*out_config = nm_ip6_config_new ();
++			g_assert (*out_config);
++		}
+ 	} else if (strcmp (method, NM_SETTING_IP6_CONFIG_METHOD_DHCP) == 0) {
+ 		/* Router advertisements shouldn't be used in pure DHCP mode */
+ 		if (priv->ip6_accept_ra_path)
+-- 
+1.8.5.3
+
+
+From 82abe50b59f09d80507d286d7259eb9038708363 Mon Sep 17 00:00:00 2001
+From: Thomas Haller <thaller@redhat.com>
+Date: Thu, 7 Nov 2013 22:59:43 +0100
+Subject: [PATCH 08/14] core: wait for IPv6 link local address with method
+ 'auto' and 'link-local' (bgo#707155)
+
+With the methods 'auto' and 'link-local' we check now, that the device
+has a usable IPv6 LL address configured (after DAD, no longer tentative).
+
+We wait for up to 5 seconds, for a suitable LL address to appear.
+Currently, if the address does not get ready, we don't create one and
+IPv6 configuration fails.
+
+This is relevant for the methods 'link-local' and 'auto'. In the latter
+case, because we cannot send router solitations without link local
+address.
+
+https://bugzilla.gnome.org/show_bug.cgi?id=707155
+
+(cherry picked from commit c4a087c36d34e584a48b6b866fc3c12f248f8512)
+
+Signed-off-by: Thomas Haller <thaller@redhat.com>
+---
+ src/devices/nm-device.c | 170 +++++++++++++++++++++++++++++++++++++++---------
+ 1 file changed, 140 insertions(+), 30 deletions(-)
+
+diff --git a/src/devices/nm-device.c b/src/devices/nm-device.c
+index 4384f6a..8c20a0d 100644
+--- a/src/devices/nm-device.c
++++ b/src/devices/nm-device.c
+@@ -269,6 +269,8 @@ typedef struct {
+ 	/* IP6 config from autoconf */
+ 	NMIP6Config *  ac_ip6_config;
+ 
++	guint          linklocal6_timeout_id;
++
+ 	char *         ip6_accept_ra_path;
+ 	gint32         ip6_accept_ra_save;
+ 
+@@ -345,6 +347,8 @@ static void nm_device_queued_ip_config_change_clear (NMDevice *self);
+ static void update_ip_config (NMDevice *self);
+ static void device_ip_changed (NMPlatform *platform, int ifindex, gpointer platform_object, NMPlatformReason reason, gpointer user_data);
+ 
++static void addrconf6_start_with_link_ready (NMDevice *self);
++
+ static const char const *platform_ip_signals[] = {
+ 	NM_PLATFORM_IP4_ADDRESS_ADDED,
+ 	NM_PLATFORM_IP4_ADDRESS_CHANGED,
+@@ -3092,6 +3096,104 @@ dhcp6_start (NMDevice *self,
+ 
+ /******************************************/
+ 
++static gboolean
++linklocal6_config_is_ready (const NMIP6Config *ip6_config)
++{
++	int i;
++
++	if (!ip6_config)
++		return FALSE;
++
++	for (i = 0; i < nm_ip6_config_get_num_addresses (ip6_config); i++) {
++		const NMPlatformIP6Address *addr = nm_ip6_config_get_address (ip6_config, i);
++
++		if (IN6_IS_ADDR_LINKLOCAL (&addr->address) &&
++		    !(addr->flags & IFA_F_TENTATIVE))
++			return TRUE;
++	}
++
++	return FALSE;
++}
++
++static void
++linklocal6_cleanup (NMDevice *self)
++{
++	NMDevicePrivate *priv = NM_DEVICE_GET_PRIVATE (self);
++
++	if (priv->linklocal6_timeout_id) {
++		g_source_remove (priv->linklocal6_timeout_id);
++		priv->linklocal6_timeout_id = 0;
++	}
++}
++
++static gboolean
++linklocal6_timeout_cb (gpointer user_data)
++{
++	NMDevice *self = user_data;
++
++	linklocal6_cleanup (self);
++
++	nm_log_dbg (LOGD_DEVICE, "[%s] linklocal6: waiting for link-local addresses failed due to timeout",
++	             nm_device_get_iface (self));
++
++	nm_device_activate_schedule_ip6_config_timeout (self);
++	return G_SOURCE_REMOVE;
++}
++
++static void
++linklocal6_complete (NMDevice *self)
++{
++	NMDevicePrivate *priv = NM_DEVICE_GET_PRIVATE (self);
++	NMConnection *connection;
++	const char *method;
++
++	g_assert (priv->linklocal6_timeout_id);
++	g_assert (linklocal6_config_is_ready (priv->ip6_config));
++
++	linklocal6_cleanup (self);
++
++	connection = nm_device_get_connection (self);
++	g_assert (connection);
++
++	method = nm_utils_get_ip_config_method (connection, NM_TYPE_SETTING_IP6_CONFIG);
++
++	nm_log_dbg (LOGD_DEVICE, "[%s] linklocal6: waiting for link-local addresses successful, continue with method %s",
++	             nm_device_get_iface (self), method);
++
++	if (strcmp (method, NM_SETTING_IP6_CONFIG_METHOD_AUTO) == 0)
++		addrconf6_start_with_link_ready (self);
++	else if (strcmp (method, NM_SETTING_IP6_CONFIG_METHOD_LINK_LOCAL) == 0)
++		nm_device_activate_schedule_ip6_config_result (self);
++	else
++		g_return_if_fail (FALSE);
++}
++
++static NMActStageReturn
++linklocal6_start (NMDevice *self)
++{
++	NMDevicePrivate *priv = NM_DEVICE_GET_PRIVATE (self);
++	NMConnection *connection;
++	const char *method;
++
++	linklocal6_cleanup (self);
++
++	if (linklocal6_config_is_ready (priv->ip6_config))
++		return NM_ACT_STAGE_RETURN_SUCCESS;
++
++	connection = nm_device_get_connection (self);
++	g_assert (connection);
++
++	method = nm_utils_get_ip_config_method (connection, NM_TYPE_SETTING_IP6_CONFIG);
++	nm_log_dbg (LOGD_DEVICE, "[%s] linklocal6: starting IPv6 with method '%s', but the device has no link-local addresses configured. Wait.",
++	            nm_device_get_iface (self), method);
++
++	priv->linklocal6_timeout_id = g_timeout_add_seconds (5, linklocal6_timeout_cb, self);
++
++	return NM_ACT_STAGE_RETURN_POSTPONE;
++}
++
++/******************************************/
++
+ static void dhcp6_cleanup (NMDevice *self, gboolean stop, gboolean release);
+ 
+ static void
+@@ -3218,6 +3320,7 @@ addrconf6_start (NMDevice *self)
+ 	NMDevicePrivate *priv = NM_DEVICE_GET_PRIVATE (self);
+ 	NMConnection *connection;
+ 	const char *ip_iface = nm_device_get_ip_iface (self);
++	NMActStageReturn ret;
+ 
+ 	connection = nm_device_get_connection (self);
+ 	g_assert (connection);
+@@ -3229,23 +3332,40 @@ addrconf6_start (NMDevice *self)
+ 	}
+ 
+ 	priv->rdisc = nm_lndp_rdisc_new (nm_device_get_ip_ifindex (self), ip_iface);
+-	nm_platform_sysctl_set (priv->ip6_accept_ra_path, "0");
+ 
+ 	if (!priv->rdisc) {
+ 		nm_log_err (LOGD_IP6, "(%s): failed to start router discovery.", ip_iface);
+ 		return FALSE;
+ 	}
+ 
+-	priv->rdisc_config_changed_sigid = g_signal_connect (
+-			priv->rdisc, NM_RDISC_CONFIG_CHANGED, G_CALLBACK (rdisc_config_changed), self);
++	/* ensure link local is ready... */
++	ret = linklocal6_start (self);
++
++	if (ret == NM_ACT_STAGE_RETURN_SUCCESS)
++		addrconf6_start_with_link_ready (self);
++	else
++		g_return_val_if_fail (ret == NM_ACT_STAGE_RETURN_POSTPONE, TRUE);
++
++	return TRUE;
++}
++
++static void
++addrconf6_start_with_link_ready (NMDevice *self)
++{
++	NMDevicePrivate *priv = NM_DEVICE_GET_PRIVATE (self);
++
++	g_assert (priv->rdisc);
+ 
+ 	/* FIXME: what if interface has no lladdr, like PPP? */
+ 	if (priv->hw_addr_len)
+ 		nm_rdisc_set_lladdr (priv->rdisc, (const char *) priv->hw_addr, priv->hw_addr_len);
+ 
+-	nm_rdisc_start (priv->rdisc);
++	nm_platform_sysctl_set (priv->ip6_accept_ra_path, "0");
+ 
+-	return TRUE;
++	priv->rdisc_config_changed_sigid = g_signal_connect (priv->rdisc, NM_RDISC_CONFIG_CHANGED,
++	                                                     G_CALLBACK (rdisc_config_changed), self);
++
++	nm_rdisc_start (priv->rdisc);
+ }
+ 
+ static void
+@@ -3265,31 +3385,6 @@ addrconf6_cleanup (NMDevice *self)
+ 
+ /******************************************/
+ 
+-static int
+-linklocal6_start (NMDevice *self)
+-{
+-	NMDevicePrivate *priv = NM_DEVICE_GET_PRIVATE (self);
+-	int i;
+-
+-	if (priv->ip6_config) {
+-		for (i = 0; i < nm_ip6_config_get_num_addresses (priv->ip6_config); i++) {
+-			const NMPlatformIP6Address *addr = nm_ip6_config_get_address (priv->ip6_config, i);
+-
+-			if (addr->plen == 128 && IN6_IS_ADDR_LINKLOCAL (&addr->address)) {
+-				/* FIXME: only accept the address if it is no longer TENTATIVE */
+-				return NM_ACT_STAGE_RETURN_SUCCESS;
+-			}
+-		}
+-	}
+-
+-	/* FIXME: we should NM_ACT_STAGE_RETURN_POSTPONE and wait until with timeout
+-	 * we get a link local address that is no longer TENTATIVE. */
+-	nm_log_warn (LOGD_DEVICE, "[%s] starting IPv6 with mode 'link-local', but the device has no link-local addresses configured.",
+-	             nm_device_get_iface (self));
+-
+-	return NM_ACT_STAGE_RETURN_STOP;
+-}
+-
+ /* Get net.ipv6.conf.default.use_tempaddr value from /etc/sysctl.conf or
+  * /lib/sysctl.d/sysctl.conf
+  */
+@@ -4397,6 +4492,7 @@ nm_device_deactivate (NMDevice *self, NMDeviceStateReason reason)
+ 
+ 	dhcp4_cleanup (self, TRUE, FALSE);
+ 	dhcp6_cleanup (self, TRUE, FALSE);
++	linklocal6_cleanup (self);
+ 	addrconf6_cleanup (self);
+ 	dnsmasq_cleanup (self);
+ 	aipd_cleanup (self);
+@@ -5179,6 +5275,7 @@ dispose (GObject *object)
+ 	/* Clean up and stop DHCP */
+ 	dhcp4_cleanup (self, deconfigure, FALSE);
+ 	dhcp6_cleanup (self, deconfigure, FALSE);
++	linklocal6_cleanup (self);
+ 	addrconf6_cleanup (self);
+ 	dnsmasq_cleanup (self);
+ 
+@@ -6346,6 +6443,7 @@ update_ip_config (NMDevice *self)
+ {
+ 	NMDevicePrivate *priv = NM_DEVICE_GET_PRIVATE (self);
+ 	int ifindex;
++	gboolean linklocal6_just_completed = FALSE;
+ 
+ 	ifindex = nm_device_get_ip_ifindex (self);
+ 	if (!ifindex)
+@@ -6367,6 +6465,11 @@ update_ip_config (NMDevice *self)
+ 	g_clear_object (&priv->ext_ip6_config);
+ 	priv->ext_ip6_config = nm_ip6_config_capture (ifindex);
+ 	if (priv->ext_ip6_config) {
++
++		/* Check this before modifying ext_ip6_config */
++		linklocal6_just_completed = priv->linklocal6_timeout_id &&
++		                            linklocal6_config_is_ready (priv->ext_ip6_config);
++
+ 		if (priv->ac_ip6_config)
+ 			nm_ip6_config_subtract (priv->ext_ip6_config, priv->ac_ip6_config);
+ 		if (priv->dhcp6_ip6_config)
+@@ -6376,6 +6479,13 @@ update_ip_config (NMDevice *self)
+ 
+ 		ip6_config_merge_and_apply (self, FALSE, NULL);
+ 	}
++
++	if (linklocal6_just_completed) {
++		/* linklocal6 is ready now, do the state transition... we are also
++		 * invoked as g_idle_add, so no problems with reentrance doing it now.
++		 */
++		linklocal6_complete (self);
++	}
+ }
+ 
+ static gboolean
+-- 
+1.8.5.3
+
+
+From 6133195b274165a8494edcf58560e2e96b39a89d Mon Sep 17 00:00:00 2001
+From: Thomas Haller <thaller@redhat.com>
+Date: Mon, 6 Jan 2014 21:05:00 +0100
+Subject: [PATCH 09/14] core/rdisc: limit the number of autoconf addresses to
+ 'max_addresses'
+
+NetworkManager uses the sysctl value 'max_addresses' as the kernel does.
+There is however a difference in what addresses are taken into account.
+The kernel counts all addresses on the interface (including temporary,
+private addresses and user configured ones).
+NM instead only limits the number of public autoconf addresses to
+'max_addresses'. This is because it is difficult for NM to count all
+addresses (which can come from different sources) and it is not
+necessarily a more logical behavior. Only be aware, that NM uses
+the same config value as the kernel, but counts differently.
+
+Especially, the kernel might reach the limit earlier then NM in the
+presence of temporary addresses or addresses not from SLAAC.
+
+Note, that the kernel uses 'max_addresses' only to limit public, autoconf
+addresses. So this limit does not affect NM adding as many addresses as
+it wants.
+
+(cherry picked from commit 84dc64c8affd658077fa3967d42374d6c3a2951c)
+
+Signed-off-by: Thomas Haller <thaller@redhat.com>
+---
+ src/devices/nm-device.c   | 23 ++++++++++++++++++++++-
+ src/rdisc/nm-fake-rdisc.c |  3 ++-
+ src/rdisc/nm-fake-rdisc.h |  2 +-
+ src/rdisc/nm-lndp-rdisc.c | 10 +++++++++-
+ src/rdisc/nm-lndp-rdisc.h |  2 +-
+ src/rdisc/nm-rdisc.h      |  1 +
+ src/rdisc/tests/rdisc.c   |  4 ++--
+ 7 files changed, 38 insertions(+), 7 deletions(-)
+
+diff --git a/src/devices/nm-device.c b/src/devices/nm-device.c
+index 8c20a0d..e8ed2ba 100644
+--- a/src/devices/nm-device.c
++++ b/src/devices/nm-device.c
+@@ -449,6 +449,21 @@ update_ip6_privacy_save (NMDevice *self)
+ 	}
+ }
+ 
++static gint32
++sysctl_get_ipv6_max_addresses (const char *dev)
++{
++	gint32 max_addresses = 16;
++	char *path;
++
++	g_return_val_if_fail (dev && *dev, max_addresses);
++
++	path = g_strdup_printf ("/proc/sys/net/ipv6/conf/%s/max_addresses", dev);
++	max_addresses = nm_platform_sysctl_get_int32 (path, max_addresses);
++	g_free (path);
++
++	return max_addresses;
++}
++
+ /*
+  * Get driver info from SIOCETHTOOL ioctl() for 'iface'
+  * Returns driver and firmware versions to 'driver_version and' 'firmware_version'
+@@ -3225,6 +3240,11 @@ rdisc_config_changed (NMRDisc *rdisc, NMRDiscConfigMap changed, NMDevice *device
+ 		/* Rebuild address list from router discovery cache. */
+ 		nm_ip6_config_reset_addresses (priv->ac_ip6_config);
+ 
++		/* rdisc->addresses contains at most max_addresses entries.
++		 * This is different from what the kernel does, which
++		 * also counts static and temporary addresses when checking
++		 * max_addresses.
++		 **/
+ 		for (i = 0; i < rdisc->addresses->len; i++) {
+ 			NMRDiscAddress *discovered_address = &g_array_index (rdisc->addresses, NMRDiscAddress, i);
+ 			NMPlatformIP6Address address;
+@@ -3331,7 +3351,8 @@ addrconf6_start (NMDevice *self)
+ 		priv->ac_ip6_config = NULL;
+ 	}
+ 
+-	priv->rdisc = nm_lndp_rdisc_new (nm_device_get_ip_ifindex (self), ip_iface);
++	priv->rdisc = nm_lndp_rdisc_new (nm_device_get_ip_ifindex (self), ip_iface,
++	                                 sysctl_get_ipv6_max_addresses (ip_iface));
+ 
+ 	if (!priv->rdisc) {
+ 		nm_log_err (LOGD_IP6, "(%s): failed to start router discovery.", ip_iface);
+diff --git a/src/rdisc/nm-fake-rdisc.c b/src/rdisc/nm-fake-rdisc.c
+index f39c5a2..38faa50 100644
+--- a/src/rdisc/nm-fake-rdisc.c
++++ b/src/rdisc/nm-fake-rdisc.c
+@@ -36,7 +36,7 @@ G_DEFINE_TYPE (NMFakeRDisc, nm_fake_rdisc, NM_TYPE_RDISC)
+ /******************************************************************/
+ 
+ NMRDisc *
+-nm_fake_rdisc_new (int ifindex, const char *ifname)
++nm_fake_rdisc_new (int ifindex, const char *ifname, gint32 max_addresses)
+ {
+ 	NMRDisc *rdisc = g_object_new (NM_TYPE_FAKE_RDISC, NULL);
+ 
+@@ -44,6 +44,7 @@ nm_fake_rdisc_new (int ifindex, const char *ifname)
+ 
+ 	rdisc->ifindex = ifindex;
+ 	rdisc->ifname = g_strdup (ifname);
++	rdisc->max_addresses = max_addresses;
+ 
+ 	return rdisc;
+ }
+diff --git a/src/rdisc/nm-fake-rdisc.h b/src/rdisc/nm-fake-rdisc.h
+index 248283b..cff9ee4 100644
+--- a/src/rdisc/nm-fake-rdisc.h
++++ b/src/rdisc/nm-fake-rdisc.h
+@@ -44,6 +44,6 @@ typedef struct {
+ 
+ GType nm_fake_rdisc_get_type (void);
+ 
+-NMRDisc *nm_fake_rdisc_new (int ifindex, const char *ifname);
++NMRDisc *nm_fake_rdisc_new (int ifindex, const char *ifname, gint32 max_addressses);
+ 
+ #endif /* NM_FAKE_RDISC_H */
+diff --git a/src/rdisc/nm-lndp-rdisc.c b/src/rdisc/nm-lndp-rdisc.c
+index c9bb2cf..c328f99 100644
+--- a/src/rdisc/nm-lndp-rdisc.c
++++ b/src/rdisc/nm-lndp-rdisc.c
+@@ -48,7 +48,7 @@ G_DEFINE_TYPE (NMLNDPRDisc, nm_lndp_rdisc, NM_TYPE_RDISC)
+ /******************************************************************/
+ 
+ NMRDisc *
+-nm_lndp_rdisc_new (int ifindex, const char *ifname)
++nm_lndp_rdisc_new (int ifindex, const char *ifname, gint32 max_addresses)
+ {
+ 	NMRDisc *rdisc;
+ 	NMLNDPRDiscPrivate *priv;
+@@ -59,6 +59,7 @@ nm_lndp_rdisc_new (int ifindex, const char *ifname)
+ 
+ 	rdisc->ifindex = ifindex;
+ 	rdisc->ifname = g_strdup (ifname);
++	rdisc->max_addresses = max_addresses;
+ 
+ 	priv = NM_LNDP_RDISC_GET_PRIVATE (rdisc);
+ 	error = ndp_open (&priv->ndp);
+@@ -113,6 +114,13 @@ add_address (NMRDisc *rdisc, const NMRDiscAddress *new)
+ 		}
+ 	}
+ 
++	/* we create at most max_addresses autoconf addresses. This is different from
++	 * what the kernel does, because it considers *all* addresses (including
++	 * static and other temporary addresses).
++	 **/
++	if (rdisc->max_addresses && rdisc->addresses->len >= rdisc->max_addresses)
++		return FALSE;
++
+ 	g_array_insert_val (rdisc->addresses, i, *new);
+ 	return TRUE;
+ }
+diff --git a/src/rdisc/nm-lndp-rdisc.h b/src/rdisc/nm-lndp-rdisc.h
+index eb6a1df..30d53db 100644
+--- a/src/rdisc/nm-lndp-rdisc.h
++++ b/src/rdisc/nm-lndp-rdisc.h
+@@ -44,6 +44,6 @@ typedef struct {
+ 
+ GType nm_lndp_rdisc_get_type (void);
+ 
+-NMRDisc *nm_lndp_rdisc_new (int ifindex, const char *ifname);
++NMRDisc *nm_lndp_rdisc_new (int ifindex, const char *ifname, gint32 max_addresses);
+ 
+ #endif /* NM_LNDP_RDISC_H */
+diff --git a/src/rdisc/nm-rdisc.h b/src/rdisc/nm-rdisc.h
+index c645bda..219b6b2 100644
+--- a/src/rdisc/nm-rdisc.h
++++ b/src/rdisc/nm-rdisc.h
+@@ -106,6 +106,7 @@ typedef struct {
+ 	int ifindex;
+ 	char *ifname;
+ 	GBytes *lladdr;
++	gint32 max_addresses;
+ 
+ 	NMRDiscDHCPLevel dhcp_level;
+ 	GArray *gateways;
+diff --git a/src/rdisc/tests/rdisc.c b/src/rdisc/tests/rdisc.c
+index 680bb2e..e8e2a9f 100644
+--- a/src/rdisc/tests/rdisc.c
++++ b/src/rdisc/tests/rdisc.c
+@@ -12,7 +12,7 @@ main (int argc, char **argv)
+ {
+ 	GMainLoop *loop;
+ 	NMRDisc *rdisc;
+-	NMRDisc *(*new) (int ifindex, const char *ifname) = nm_lndp_rdisc_new;
++	NMRDisc *(*new) (int ifindex, const char *ifname, gint32 max_addresses) = nm_lndp_rdisc_new;
+ 	int ifindex = 1;
+ 	char ifname[IF_NAMESIZE];
+ 	char mac[6] = { 0x02, 0xaa, 0xbb, 0xcc, 0xdd, 0xee };
+@@ -34,7 +34,7 @@ main (int argc, char **argv)
+ 		}
+ 	}
+ 
+-	rdisc = new (ifindex, ifname);
++	rdisc = new (ifindex, ifname, 0);
+ 	if (!rdisc)
+ 		return EXIT_FAILURE;
+ 
+-- 
+1.8.5.3
+
+
+From dc11f1ca2ee02f986b714f1def9fe64e1de14f35 Mon Sep 17 00:00:00 2001
+From: Thomas Haller <thaller@redhat.com>
+Date: Fri, 3 Jan 2014 16:07:36 +0100
+Subject: [PATCH 10/14] core/platform: workaround new address flag in
+ address_to_string
+
+The kernel and libnl adds two new flags IFA_F_MANAGETEMPADDR
+and IFA_F_NOPREFIXROUTE. Older versions of libnl do not recognize
+this flag, so add a workaround to nm_platform_ip6_address_to_string()
+to show "mngtmpaddr" and "noprefixroute", respectively.
+
+Also, add function nm_platform_check_support_libnl_extended_ifa_flags()
+that checks whether libnl supports extended ifa_flags that were
+added recently.
+
+Extended flags and the two ifa-flags above were added to libnl in close
+succession.
+
+(cherry picked from commit 2bc61d1ad3278d4fc38d17bd6178e7e304c6339a)
+
+Signed-off-by: Thomas Haller <thaller@redhat.com>
+---
+ src/platform/nm-platform.c | 41 ++++++++++++++++++++++++++++++++++++++++-
+ src/platform/nm-platform.h |  2 ++
+ 2 files changed, 42 insertions(+), 1 deletion(-)
+
+diff --git a/src/platform/nm-platform.c b/src/platform/nm-platform.c
+index cf21e5c..92c9c30 100644
+--- a/src/platform/nm-platform.c
++++ b/src/platform/nm-platform.c
+@@ -31,6 +31,14 @@
+ #include "nm-logging.h"
+ #include "nm-enum-types.h"
+ 
++/* workaround for older libnl version, that does not define these flags. */
++#ifndef IFA_F_MANAGETEMPADDR
++#define IFA_F_MANAGETEMPADDR 0x100
++#endif
++#ifndef IFA_F_NOPREFIXROUTE
++#define IFA_F_NOPREFIXROUTE 0x200
++#endif
++
+ #define debug(...) nm_log_dbg (LOGD_PLATFORM, __VA_ARGS__)
+ 
+ #define NM_PLATFORM_GET_PRIVATE(o) (G_TYPE_INSTANCE_GET_PRIVATE ((o), NM_TYPE_PLATFORM, NMPlatformPrivate))
+@@ -196,6 +204,22 @@ reset_error (void)
+ 	platform->error = NM_PLATFORM_ERROR_NONE;
+ }
+ 
++#define IFA_F_MANAGETEMPADDR_STR "mngtmpaddr"
++#define IFA_F_NOPREFIXROUTE_STR "noprefixroute"
++gboolean
++nm_platform_check_support_libnl_extended_ifa_flags ()
++{
++	static int supported = -1;
++
++	/* support for extended ifa-flags was added together
++	 * with the IFA_F_MANAGETEMPADDR flag. So, check if libnl
++	 * is able to parse this flag. */
++	if (supported == -1)
++		supported = rtnl_addr_str2flags (IFA_F_MANAGETEMPADDR_STR) == IFA_F_MANAGETEMPADDR;
++
++	return supported;
++}
++
+ /******************************************************************/
+ 
+ /**
+@@ -1688,7 +1712,22 @@ nm_platform_ip6_address_to_string (const NMPlatformIP6Address *address)
+ 	inet_ntop (AF_INET6, &address->address, s_address, sizeof (s_address));
+ 	s_dev = address->ifindex > 0 ? nm_platform_link_get_name (address->ifindex) : NULL;
+ 
+-	rtnl_addr_flags2str(address->flags, s_flags, sizeof(s_flags));
++	rtnl_addr_flags2str(address->flags, s_flags, sizeof (s_flags));
++
++	/* There are two recent flags IFA_F_MANAGETEMPADDR and IFA_F_NOPREFIXROUTE.
++	 * If libnl does not yet support them, add them by hand.
++	 * These two flags were introduced together with the extended ifa_flags,
++	 * so, check for that.
++	 **/
++	if ((address->flags && IFA_F_MANAGETEMPADDR) & !nm_platform_check_support_libnl_extended_ifa_flags ()) {
++		strncat (s_flags, s_flags[0] ? "," IFA_F_MANAGETEMPADDR_STR : IFA_F_MANAGETEMPADDR_STR,
++		         sizeof (s_flags) - strlen (s_flags) - 1);
++	}
++	if ((address->flags && IFA_F_NOPREFIXROUTE) & !nm_platform_check_support_libnl_extended_ifa_flags ()) {
++		strncat (s_flags, s_flags[0] ? "," IFA_F_NOPREFIXROUTE_STR : IFA_F_NOPREFIXROUTE_STR,
++		         sizeof (s_flags) - strlen (s_flags) - 1);
++	}
++
+ 	str_flags = s_flags[0] ? g_strconcat (" flags ", s_flags, NULL) : NULL;
+ 
+ 	g_snprintf (buffer, sizeof (buffer), "%s/%d lft %u pref %u time %u dev %s%s",
+diff --git a/src/platform/nm-platform.h b/src/platform/nm-platform.h
+index d4864d0..26a6737 100644
+--- a/src/platform/nm-platform.h
++++ b/src/platform/nm-platform.h
+@@ -444,6 +444,8 @@ int nm_platform_ip6_address_cmp (const NMPlatformIP6Address *a, const NMPlatform
+ int nm_platform_ip4_route_cmp (const NMPlatformIP4Route *a, const NMPlatformIP4Route *b);
+ int nm_platform_ip6_route_cmp (const NMPlatformIP6Route *a, const NMPlatformIP6Route *b);
+ 
++gboolean nm_platform_check_support_libnl_extended_ifa_flags (void);
++
+ #define auto_g_free __attribute__((cleanup(put_g_free)))
+ static void __attribute__((unused))
+ put_g_free (void *ptr)
+-- 
+1.8.5.3
+
+
+From 57af43c6118d8d62a8671919833864e2d5e3a270 Mon Sep 17 00:00:00 2001
+From: Thomas Haller <thaller@redhat.com>
+Date: Tue, 7 Jan 2014 17:21:12 +0100
+Subject: [PATCH 11/14] core/platform: add
+ check_support_kernel_extended_ifa_flags function
+
+The kernel adds a new capability to allow user space to manage
+temporary IPv6 addresses. We need to detect this capability
+to act differently, depending on whether NM has an older kernel
+at hand.
+
+This capability got introduced together when extending the
+ifa_flags to 32 bit. So, we can check the netlink message,
+whether we have such an nl attribute at hand.
+
+(cherry picked from commit 7841f9ea0a4efdcb4540628cf65d7d9356b748f7)
+
+Signed-off-by: Thomas Haller <thaller@redhat.com>
+---
+ src/platform/nm-linux-platform.c | 57 ++++++++++++++++++++++++++++++++++++++++
+ src/platform/nm-platform.c       | 11 ++++++++
+ src/platform/nm-platform.h       |  3 +++
+ 3 files changed, 71 insertions(+)
+
+diff --git a/src/platform/nm-linux-platform.c b/src/platform/nm-linux-platform.c
+index 1a44c40..b60f101 100644
+--- a/src/platform/nm-linux-platform.c
++++ b/src/platform/nm-linux-platform.c
+@@ -65,6 +65,8 @@ typedef struct {
+ 
+ 	GUdevClient *udev_client;
+ 	GHashTable *udev_devices;
++
++	int support_kernel_extended_ifa_flags;
+ } NMLinuxPlatformPrivate;
+ 
+ #define NM_LINUX_PLATFORM_GET_PRIVATE(o) (G_TYPE_INSTANCE_GET_PRIVATE ((o), NM_TYPE_LINUX_PLATFORM, NMLinuxPlatformPrivate))
+@@ -427,6 +429,45 @@ ethtool_get_stringset_index (const char *ifname, int stringset_id, const char *s
+ 
+ /******************************************************************/
+ 
++static void
++_check_support_kernel_extended_ifa_flags_init (NMLinuxPlatformPrivate *priv, struct nl_msg *msg)
++{
++	struct nlmsghdr *msg_hdr = nlmsg_hdr (msg);
++
++	g_return_if_fail (priv->support_kernel_extended_ifa_flags == 0);
++	g_return_if_fail (msg_hdr->nlmsg_type == RTM_NEWADDR);
++
++	/* the extended address flags are only set for AF_INET6 */
++	if (((struct ifaddrmsg *) nlmsg_data (msg_hdr))->ifa_family != AF_INET6)
++		return;
++
++	/* see if the nl_msg contains the IFA_FLAGS attribute. If it does,
++	 * we assume, that the kernel supports extended flags, IFA_F_MANAGETEMPADDR
++	 * and IFA_F_NOPREFIXROUTE (they were added together).
++	 **/
++	priv->support_kernel_extended_ifa_flags =
++	    nlmsg_find_attr (msg_hdr, sizeof (struct ifaddrmsg), 8 /* IFA_FLAGS */)
++	    ? 1 : -1;
++}
++
++static gboolean
++check_support_kernel_extended_ifa_flags (NMPlatform *platform)
++{
++	NMLinuxPlatformPrivate *priv;
++
++	g_return_val_if_fail (NM_IS_LINUX_PLATFORM (platform), FALSE);
++
++	priv = NM_LINUX_PLATFORM_GET_PRIVATE (platform);
++
++	if (priv->support_kernel_extended_ifa_flags == 0) {
++		g_warn_if_reached ();
++		priv->support_kernel_extended_ifa_flags = -1;
++	}
++
++	return priv->support_kernel_extended_ifa_flags > 0;
++}
++
++
+ /* Object type specific utilities */
+ 
+ static const char *
+@@ -1195,6 +1236,14 @@ event_notification (struct nl_msg *msg, gpointer user_data)
+ 	int nle;
+ 
+ 	event = nlmsg_hdr (msg)->nlmsg_type;
++
++	if (priv->support_kernel_extended_ifa_flags == 0 && event == RTM_NEWADDR) {
++		/* if kernel support for extended ifa flags is still undecided, use the opportunity
++		 * now and use @msg to decide it. This saves a blocking net link request.
++		 **/
++		_check_support_kernel_extended_ifa_flags_init (priv, msg);
++	}
++
+ 	nl_msg_parse (msg, ref_object, &object);
+ 	g_return_val_if_fail (object, NL_OK);
+ 
+@@ -2744,6 +2793,12 @@ setup (NMPlatform *platform)
+ 	g_list_free (devices);
+ 	g_object_unref (enumerator);
+ 
++	/* request all IPv6 addresses (hopeing that there is at least one), to check for
++	 * the IFA_FLAGS attribute. */
++	nle = nl_rtgen_request (priv->nlh_event, RTM_GETADDR, AF_INET6, NLM_F_DUMP);
++	if (nle != 0)
++		nm_log_warn (LOGD_PLATFORM, "Netlink error: requesting RTM_GETADDR failed with %s", nl_geterror (nle));
++
+ 	return TRUE;
+ }
+ 
+@@ -2848,4 +2903,6 @@ nm_linux_platform_class_init (NMLinuxPlatformClass *klass)
+ 	platform_class->ip6_route_delete = ip6_route_delete;
+ 	platform_class->ip4_route_exists = ip4_route_exists;
+ 	platform_class->ip6_route_exists = ip6_route_exists;
++
++	platform_class->check_support_kernel_extended_ifa_flags = check_support_kernel_extended_ifa_flags;
+ }
+diff --git a/src/platform/nm-platform.c b/src/platform/nm-platform.c
+index 92c9c30..5871f86 100644
+--- a/src/platform/nm-platform.c
++++ b/src/platform/nm-platform.c
+@@ -220,6 +220,17 @@ nm_platform_check_support_libnl_extended_ifa_flags ()
+ 	return supported;
+ }
+ 
++gboolean
++nm_platform_check_support_kernel_extended_ifa_flags ()
++{
++	g_return_val_if_fail (NM_IS_PLATFORM (platform), FALSE);
++
++	if (!klass->check_support_kernel_extended_ifa_flags)
++		return FALSE;
++
++	return klass->check_support_kernel_extended_ifa_flags (platform);
++}
++
+ /******************************************************************/
+ 
+ /**
+diff --git a/src/platform/nm-platform.h b/src/platform/nm-platform.h
+index 26a6737..d5b3672 100644
+--- a/src/platform/nm-platform.h
++++ b/src/platform/nm-platform.h
+@@ -302,6 +302,8 @@ typedef struct {
+ 	gboolean (*ip6_route_delete) (NMPlatform *, int ifindex, struct in6_addr network, int plen, int metric);
+ 	gboolean (*ip4_route_exists) (NMPlatform *, int ifindex, in_addr_t network, int plen, int metric);
+ 	gboolean (*ip6_route_exists) (NMPlatform *, int ifindex, struct in6_addr network, int plen, int metric);
++
++	gboolean (*check_support_kernel_extended_ifa_flags) (NMPlatform *);
+ } NMPlatformClass;
+ 
+ /* NMPlatform signals
+@@ -445,6 +447,7 @@ int nm_platform_ip4_route_cmp (const NMPlatformIP4Route *a, const NMPlatformIP4R
+ int nm_platform_ip6_route_cmp (const NMPlatformIP6Route *a, const NMPlatformIP6Route *b);
+ 
+ gboolean nm_platform_check_support_libnl_extended_ifa_flags (void);
++gboolean nm_platform_check_support_kernel_extended_ifa_flags (void);
+ 
+ #define auto_g_free __attribute__((cleanup(put_g_free)))
+ static void __attribute__((unused))
+-- 
+1.8.5.3
+
+
+From 399f5d8dfd7a74dbd9043015e15df3fa1644fefb Mon Sep 17 00:00:00 2001
+From: Thomas Haller <thaller@redhat.com>
+Date: Fri, 31 Jan 2014 14:54:31 +0100
+Subject: [PATCH 12/14] core/platform: fix wrong warning log in
+ nm-linux-platform
+
+According to documentation, nl_rtgen_request() returns 0 on success.
+Due to a bug (fixed upstream) in older libnl versions, nl_rtgen_request()
+returns the number of bytes sent, which caused logging although
+succeeding.
+
+(cherry picked from commit 6c2f96421b1c7bfd65032bf4de2a6cfc10b3b262)
+
+Signed-off-by: Thomas Haller <thaller@redhat.com>
+---
+ src/platform/nm-linux-platform.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/src/platform/nm-linux-platform.c b/src/platform/nm-linux-platform.c
+index b60f101..7933678 100644
+--- a/src/platform/nm-linux-platform.c
++++ b/src/platform/nm-linux-platform.c
+@@ -2796,7 +2796,7 @@ setup (NMPlatform *platform)
+ 	/* request all IPv6 addresses (hopeing that there is at least one), to check for
+ 	 * the IFA_FLAGS attribute. */
+ 	nle = nl_rtgen_request (priv->nlh_event, RTM_GETADDR, AF_INET6, NLM_F_DUMP);
+-	if (nle != 0)
++	if (nle < 0)
+ 		nm_log_warn (LOGD_PLATFORM, "Netlink error: requesting RTM_GETADDR failed with %s", nl_geterror (nle));
+ 
+ 	return TRUE;
+-- 
+1.8.5.3
+
+
+From b7a960b1287b11ff3db02204a2ff6888efa571f5 Mon Sep 17 00:00:00 2001
+From: Thomas Haller <thaller@redhat.com>
+Date: Fri, 3 Jan 2014 17:03:35 +0100
+Subject: [PATCH 13/14] core/rdisc: add autoconf addresses as /64 (instead of
+ /128)
+
+This feature needs support from the kernel and libnl.
+
+If there is no system support, NM acts as before, adding the
+autoconf address as /128. It does so, to prevent the kernel
+from adding a route for this prefix. With system support, we
+add the address as /64 and set the flag IFA_F_NOPREFIXROUTE.
+
+https://bugzilla.redhat.com/show_bug.cgi?id=1044590
+https://bugzilla.redhat.com/show_bug.cgi?id=1045118
+
+(cherry picked from commit 39cbe772a67aece69dc30f8f394bba2eea9ca762)
+
+Signed-off-by: Thomas Haller <thaller@redhat.com>
+---
+ src/devices/nm-device.c | 28 +++++++++++++++++++++++++++-
+ 1 file changed, 27 insertions(+), 1 deletion(-)
+
+diff --git a/src/devices/nm-device.c b/src/devices/nm-device.c
+index e8ed2ba..2e870a8 100644
+--- a/src/devices/nm-device.c
++++ b/src/devices/nm-device.c
+@@ -36,6 +36,7 @@
+ #include <arpa/inet.h>
+ #include <fcntl.h>
+ #include <linux/if.h>
++#include <netlink/route/addr.h>
+ 
+ #include "libgsystem.h"
+ #include "nm-glib-compat.h"
+@@ -68,6 +69,11 @@
+ #include "nm-config.h"
+ #include "nm-platform.h"
+ 
++/* workaround for older libnl version, that does not define this flag. */
++#ifndef IFA_F_NOPREFIXROUTE
++#define IFA_F_NOPREFIXROUTE 0x200
++#endif
++
+ static void impl_device_disconnect (NMDevice *device, DBusGMethodInvocation *context);
+ 
+ #include "nm-device-glue.h"
+@@ -3218,6 +3224,25 @@ rdisc_config_changed (NMRDisc *rdisc, NMRDiscConfigMap changed, NMDevice *device
+ 	NMConnection *connection;
+ 	int i;
+ 	NMDeviceStateReason reason;
++	static int system_support = -1;
++	guint ifa_flags;
++
++	if (system_support == -1) {
++		/*
++		 * Check, if both libnl and the kernel are recent enough,
++		 * to help user space handling RA. If it's not supported,
++		 * we must add autoconf addresses as /128.
++		 * The reason for /128 is to prevent the kernel from adding
++		 * a prefix route for this address.
++		 **/
++		system_support = nm_platform_check_support_libnl_extended_ifa_flags () &&
++		                 nm_platform_check_support_kernel_extended_ifa_flags ();
++	}
++
++	/* without system_support, this flag will be ignored.
++	 * Still, we set it (why not?).
++	 **/
++	ifa_flags = IFA_F_NOPREFIXROUTE;
+ 
+ 	g_return_if_fail (priv->act_request);
+ 	connection = nm_device_get_connection (device);
+@@ -3251,10 +3276,11 @@ rdisc_config_changed (NMRDisc *rdisc, NMRDiscConfigMap changed, NMDevice *device
+ 
+ 			memset (&address, 0, sizeof (address));
+ 			address.address = discovered_address->address;
+-			address.plen = 128;
++			address.plen = system_support ? 64 : 128;
+ 			address.timestamp = discovered_address->timestamp;
+ 			address.lifetime = discovered_address->lifetime;
+ 			address.preferred = discovered_address->preferred;
++			address.flags = ifa_flags;
+ 
+ 			nm_ip6_config_add_address (priv->ac_ip6_config, &address);
+ 		}
+-- 
+1.8.5.3
+
+
+From 14705adcd0a1f87d31623cd3c99978d1a5c0161a Mon Sep 17 00:00:00 2001
+From: Thomas Haller <thaller@redhat.com>
+Date: Fri, 3 Jan 2014 17:03:35 +0100
+Subject: [PATCH 14/14] core/rdisc: add support for IPv6 privacy
+
+Add support for ipv6-private addresses. This feature
+needs support from the kernel and libnl.
+
+If there is no system support, temporary addresses are
+not supported. Log a warning in this case.
+
+Depending on whether ipv6-privacy (use_tempaddr) is enabled,
+we add the address flag IFA_F_MANAGETEMPADDR and the kernel
+will add temporary addresses for us.
+
+https://bugzilla.gnome.org/show_bug.cgi?id=705170
+https://bugzilla.redhat.com/show_bug.cgi?id=1003859
+https://bugzilla.redhat.com/show_bug.cgi?id=1047139
+
+(cherry picked from commit 1dea2714697b8cfe386c6665d7e556d537bebaf0)
+
+Signed-off-by: Thomas Haller <thaller@redhat.com>
+---
+ src/devices/nm-device.c | 122 +++++++++++++++++++++++++++++++++++++-----------
+ 1 file changed, 96 insertions(+), 26 deletions(-)
+
+diff --git a/src/devices/nm-device.c b/src/devices/nm-device.c
+index 2e870a8..39146a6 100644
+--- a/src/devices/nm-device.c
++++ b/src/devices/nm-device.c
+@@ -69,7 +69,10 @@
+ #include "nm-config.h"
+ #include "nm-platform.h"
+ 
+-/* workaround for older libnl version, that does not define this flag. */
++/* workaround for older libnl version, that does not define these flags. */
++#ifndef IFA_F_MANAGETEMPADDR
++#define IFA_F_MANAGETEMPADDR 0x100
++#endif
+ #ifndef IFA_F_NOPREFIXROUTE
+ #define IFA_F_NOPREFIXROUTE 0x200
+ #endif
+@@ -272,6 +275,7 @@ typedef struct {
+ 
+ 	NMRDisc *      rdisc;
+ 	gulong         rdisc_config_changed_sigid;
++	NMSettingIP6ConfigPrivacy rdisc_use_tempaddr;
+ 	/* IP6 config from autoconf */
+ 	NMIP6Config *  ac_ip6_config;
+ 
+@@ -3218,6 +3222,53 @@ linklocal6_start (NMDevice *self)
+ static void dhcp6_cleanup (NMDevice *self, gboolean stop, gboolean release);
+ 
+ static void
++print_support_extended_ifa_flags (NMSettingIP6ConfigPrivacy use_tempaddr)
++{
++	static gint8 warn = 0;
++	static gint8 s_libnl = -1, s_kernel;
++
++	if (warn >= 2)
++		return;
++
++	if (s_libnl == -1) {
++		s_libnl = !!nm_platform_check_support_libnl_extended_ifa_flags ();
++		s_kernel = !!nm_platform_check_support_kernel_extended_ifa_flags ();
++
++		if (s_libnl && s_kernel) {
++			nm_log_dbg (LOGD_IP6, "kernel and libnl support extended IFA_FLAGS (needed by NM for IPv6 private addresses)");
++			warn = 2;
++			return;
++		}
++	}
++
++	if (   use_tempaddr != NM_SETTING_IP6_CONFIG_PRIVACY_PREFER_TEMP_ADDR
++	    && use_tempaddr != NM_SETTING_IP6_CONFIG_PRIVACY_PREFER_PUBLIC_ADDR) {
++		if (warn == 0) {
++			nm_log_dbg (LOGD_IP6, "%s%s%s %s not support extended IFA_FLAGS (needed by NM for IPv6 private addresses)",
++			                      !s_kernel ? "kernel" : "",
++			                      !s_kernel && !s_libnl ? " and " : "",
++			                      !s_libnl ? "libnl" : "",
++			                      !s_kernel && !s_libnl ? "do" : "does");
++			warn = 1;
++		}
++		return;
++	}
++
++	if (!s_libnl && !s_kernel) {
++		nm_log_warn (LOGD_IP6, "libnl and the kernel do not support extended IFA_FLAGS needed by NM for "
++		                       "IPv6 private addresses. This feature is not available");
++	} else if (!s_libnl) {
++		nm_log_warn (LOGD_IP6, "libnl does not support extended IFA_FLAGS needed by NM for "
++		                       "IPv6 private addresses. This feature is not available");
++	} else if (!s_kernel) {
++		nm_log_warn (LOGD_IP6, "The kernel does not support extended IFA_FLAGS needed by NM for "
++		                       "IPv6 private addresses. This feature is not available");
++	}
++
++	warn = 2;
++}
++
++static void
+ rdisc_config_changed (NMRDisc *rdisc, NMRDiscConfigMap changed, NMDevice *device)
+ {
+ 	NMDevicePrivate *priv = NM_DEVICE_GET_PRIVATE (device);
+@@ -3231,18 +3282,21 @@ rdisc_config_changed (NMRDisc *rdisc, NMRDiscConfigMap changed, NMDevice *device
+ 		/*
+ 		 * Check, if both libnl and the kernel are recent enough,
+ 		 * to help user space handling RA. If it's not supported,
+-		 * we must add autoconf addresses as /128.
+-		 * The reason for /128 is to prevent the kernel from adding
+-		 * a prefix route for this address.
++		 * we have no ipv6-privacy and must add autoconf addresses
++		 * as /128. The reason for the /128 is to prevent the kernel
++		 * from adding a prefix route for this address.
+ 		 **/
+ 		system_support = nm_platform_check_support_libnl_extended_ifa_flags () &&
+ 		                 nm_platform_check_support_kernel_extended_ifa_flags ();
+ 	}
+ 
+-	/* without system_support, this flag will be ignored.
+-	 * Still, we set it (why not?).
++	/* without system_support, these flags will be ignored.
++	 * Still, we set them (why not?).
+ 	 **/
+ 	ifa_flags = IFA_F_NOPREFIXROUTE;
++	if (priv->rdisc_use_tempaddr == NM_SETTING_IP6_CONFIG_PRIVACY_PREFER_TEMP_ADDR
++	    || priv->rdisc_use_tempaddr == NM_SETTING_IP6_CONFIG_PRIVACY_PREFER_PUBLIC_ADDR)
++		ifa_flags |= IFA_F_MANAGETEMPADDR;
+ 
+ 	g_return_if_fail (priv->act_request);
+ 	connection = nm_device_get_connection (device);
+@@ -3361,7 +3415,7 @@ rdisc_config_changed (NMRDisc *rdisc, NMRDiscConfigMap changed, NMDevice *device
+ }
+ 
+ static gboolean
+-addrconf6_start (NMDevice *self)
++addrconf6_start (NMDevice *self, NMSettingIP6ConfigPrivacy use_tempaddr)
+ {
+ 	NMDevicePrivate *priv = NM_DEVICE_GET_PRIVATE (self);
+ 	NMConnection *connection;
+@@ -3385,6 +3439,9 @@ addrconf6_start (NMDevice *self)
+ 		return FALSE;
+ 	}
+ 
++	priv->rdisc_use_tempaddr = use_tempaddr;
++	print_support_extended_ifa_flags (use_tempaddr);
++
+ 	/* ensure link local is ready... */
+ 	ret = linklocal6_start (self);
+ 
+@@ -3432,10 +3489,23 @@ addrconf6_cleanup (NMDevice *self)
+ 
+ /******************************************/
+ 
++static NMSettingIP6ConfigPrivacy
++use_tempaddr_clamp (NMSettingIP6ConfigPrivacy use_tempaddr)
++{
++	switch (use_tempaddr) {
++	case NM_SETTING_IP6_CONFIG_PRIVACY_DISABLED:
++	case NM_SETTING_IP6_CONFIG_PRIVACY_PREFER_TEMP_ADDR:
++	case NM_SETTING_IP6_CONFIG_PRIVACY_PREFER_PUBLIC_ADDR:
++		return use_tempaddr;
++	default:
++		return NM_SETTING_IP6_CONFIG_PRIVACY_UNKNOWN;
++	}
++}
++
+ /* Get net.ipv6.conf.default.use_tempaddr value from /etc/sysctl.conf or
+  * /lib/sysctl.d/sysctl.conf
+  */
+-static int
++static NMSettingIP6ConfigPrivacy
+ ip6_use_tempaddr (void)
+ {
+ 	char *contents = NULL;
+@@ -3443,12 +3513,13 @@ ip6_use_tempaddr (void)
+ 	char *sysctl_data = NULL;
+ 	GKeyFile *keyfile;
+ 	GError *error = NULL;
+-	int tmp, ret = -1;
++	gint tmp;
++	NMSettingIP6ConfigPrivacy ret = NM_SETTING_IP6_CONFIG_PRIVACY_UNKNOWN;
+ 
+ 	/* Read file contents to a string. */
+ 	if (!g_file_get_contents ("/etc/sysctl.conf", &contents, NULL, NULL))
+ 		if (!g_file_get_contents ("/lib/sysctl.d/sysctl.conf", &contents, NULL, NULL))
+-			return -1;
++			return NM_SETTING_IP6_CONFIG_PRIVACY_UNKNOWN;
+ 
+ 	/* Prepend a group so that we can use GKeyFile parser. */
+ 	sysctl_data = g_strdup_printf ("%s%s", group_name, contents);
+@@ -3459,7 +3530,7 @@ ip6_use_tempaddr (void)
+ 
+ 	tmp = g_key_file_get_integer (keyfile, "forged_group", "net.ipv6.conf.default.use_tempaddr", &error);
+ 	if (error == NULL)
+-		ret = tmp;
++		ret = use_tempaddr_clamp (tmp);
+ 
+ done:
+ 	g_free (contents);
+@@ -3499,8 +3570,7 @@ act_stage3_ip6_config_start (NMDevice *self,
+ 	NMActStageReturn ret = NM_ACT_STAGE_RETURN_FAILURE;
+ 	NMConnection *connection;
+ 	NMSettingIP6Config *s_ip6;
+-	const char *method = NM_SETTING_IP6_CONFIG_METHOD_AUTO;
+-	int conf_use_tempaddr;
++	const char *method;
+ 	NMSettingIP6ConfigPrivacy ip6_privacy = NM_SETTING_IP6_CONFIG_PRIVACY_UNKNOWN;
+ 	const char *ip6_privacy_str = "0\n";
+ 	GSList *slaves;
+@@ -3554,8 +3624,19 @@ act_stage3_ip6_config_start (NMDevice *self,
+ 
+ 	priv->dhcp6_mode = NM_RDISC_DHCP_LEVEL_NONE;
+ 
+-	if (   strcmp (method, NM_SETTING_IP6_CONFIG_METHOD_AUTO) == 0) {
+-		if (!addrconf6_start (self)) {
++	/* Enable/disable IPv6 Privacy Extensions.
++	 * If a global value is configured by sysadmin (e.g. /etc/sysctl.conf),
++	 * use that value instead of per-connection value.
++	 */
++	ip6_privacy = ip6_use_tempaddr ();
++	if (ip6_privacy == NM_SETTING_IP6_CONFIG_PRIVACY_UNKNOWN) {
++		if (s_ip6)
++			ip6_privacy = nm_setting_ip6_config_get_ip6_privacy (s_ip6);
++	}
++	ip6_privacy = use_tempaddr_clamp (ip6_privacy);
++
++	if (strcmp (method, NM_SETTING_IP6_CONFIG_METHOD_AUTO) == 0) {
++		if (!addrconf6_start (self, ip6_privacy)) {
+ 			/* IPv6 might be disabled; allow IPv4 to proceed */
+ 			ret = NM_ACT_STAGE_RETURN_STOP;
+ 		} else
+@@ -3597,17 +3678,6 @@ act_stage3_ip6_config_start (NMDevice *self,
+ 
+ 	/* Other methods (shared) aren't implemented yet */
+ 
+-	/* Enable/disable IPv6 Privacy Extensions.
+-	 * If a global value is configured by sysadmin (e.g. /etc/sysctl.conf),
+-	 * use that value instead of per-connection value.
+-	 */
+-	conf_use_tempaddr = ip6_use_tempaddr ();
+-	if (conf_use_tempaddr >= 0)
+-		ip6_privacy = conf_use_tempaddr;
+-	else if (s_ip6)
+-		ip6_privacy = nm_setting_ip6_config_get_ip6_privacy (s_ip6);
+-	ip6_privacy = CLAMP (ip6_privacy, NM_SETTING_IP6_CONFIG_PRIVACY_UNKNOWN, NM_SETTING_IP6_CONFIG_PRIVACY_PREFER_TEMP_ADDR);
+-
+ 	switch (ip6_privacy) {
+ 	case NM_SETTING_IP6_CONFIG_PRIVACY_UNKNOWN:
+ 	case NM_SETTING_IP6_CONFIG_PRIVACY_DISABLED:
+-- 
+1.8.5.3
+

@@ -1,0 +1,61 @@
+From a9f1d121783a7f3c65c9f47d3419b5a8a255fe47 Mon Sep 17 00:00:00 2001
+From: Dan Williams <dcbw@redhat.com>
+Date: Thu, 23 Jan 2014 12:16:02 -0600
+Subject: [PATCH] dhcp: don't add an IPv6 address if one wasn't given (rh
+ #1048046)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+In information-only mode (where RA is providing addresses), DHCPv6
+may not give an address.  NetworkManager was adding a blank one
+anyway, which is invalid.  Don't do that.
+
+Signed-off-by: Jiří Klimeš <jklimes@redhat.com>
+---
+ src/dhcp-manager/nm-dhcp-client.c | 16 +++++++---------
+ 1 file changed, 7 insertions(+), 9 deletions(-)
+
+diff --git a/src/dhcp-manager/nm-dhcp-client.c b/src/dhcp-manager/nm-dhcp-client.c
+index 75cd818..57298c8 100644
+--- a/src/dhcp-manager/nm-dhcp-client.c
++++ b/src/dhcp-manager/nm-dhcp-client.c
+@@ -1404,6 +1404,12 @@ ip6_options_to_config (NMDHCPClient *self)
+ 
+ 	ip6_config = nm_ip6_config_new ();
+ 
++	str = g_hash_table_lookup (priv->options, "new_dhcp_lease_time");
++	if (str) {
++		address.lifetime = address.preferred = strtoul (str, NULL, 10);
++		nm_log_info (LOGD_DHCP6, "  lease time %d", address.lifetime);
++	}
++
+ 	str = g_hash_table_lookup (priv->options, "new_ip6_address");
+ 	if (str) {
+ 		if (!inet_pton (AF_INET6, str, &tmp_addr)) {
+@@ -1413,21 +1419,13 @@ ip6_options_to_config (NMDHCPClient *self)
+ 		}
+ 
+ 		address.address = tmp_addr;
++		nm_ip6_config_add_address (ip6_config, &address);
+ 		nm_log_info (LOGD_DHCP6, "  address %s", str);
+-
+ 	} else if (priv->info_only == FALSE) {
+ 		/* No address in Managed mode is a hard error */
+ 		goto error;
+ 	}
+ 
+-	str = g_hash_table_lookup (priv->options, "new_dhcp_lease_time");
+-	if (str) {
+-		address.lifetime = address.preferred = strtoul (str, NULL, 10);
+-		nm_log_info (LOGD_DHCP6, "  lease time %d", address.lifetime);
+-	}
+-
+-	nm_ip6_config_add_address (ip6_config, &address);
+-
+ 	str = g_hash_table_lookup (priv->options, "new_host_name");
+ 	if (str)
+ 		nm_log_info (LOGD_DHCP6, "  hostname '%s'", str);
+-- 
+1.7.11.7
+

@@ -1,0 +1,50 @@
+From 07bf4eb802166edc737f2c742f3987a1aa39189e Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Ji=C5=99=C3=AD=20Klime=C5=A1?= <jklimes@redhat.com>
+Date: Tue, 12 Nov 2013 15:04:15 +0100
+Subject: [PATCH] keyfile: don't crash when in-memory-only connections don't
+ have paths
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+If the connection has never been saved to disk, it won't have a path yet,
+but that doesn't mean we should crash.  Next, when reloading connections,
+only try to do connection matching on connections that have paths, otherwise
+all in-memory-only connections would be removed at the end of
+read_connections().
+
+Signed-off-by: Jiří Klimeš <jklimes@redhat.com>
+---
+ src/settings/plugins/keyfile/plugin.c | 9 ++++++---
+ 1 file changed, 6 insertions(+), 3 deletions(-)
+
+diff --git a/src/settings/plugins/keyfile/plugin.c b/src/settings/plugins/keyfile/plugin.c
+index c5fb9e0..950f566 100644
+--- a/src/settings/plugins/keyfile/plugin.c
++++ b/src/settings/plugins/keyfile/plugin.c
+@@ -16,7 +16,7 @@
+  * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+  *
+  * Copyright (C) 2008 Novell, Inc.
+- * Copyright (C) 2008 - 2012 Red Hat, Inc.
++ * Copyright (C) 2008 - 2013 Red Hat, Inc.
+  */
+ 
+ #include <config.h>
+@@ -345,8 +345,11 @@ read_connections (NMSystemConfigInterface *config)
+ 
+ 	oldconns = g_hash_table_new_full (g_str_hash, g_str_equal, g_free, NULL);
+ 	g_hash_table_iter_init (&iter, priv->connections);
+-	while (g_hash_table_iter_next (&iter, NULL, &data))
+-		g_hash_table_insert (oldconns, g_strdup (nm_keyfile_connection_get_path (data)), data);
++	while (g_hash_table_iter_next (&iter, NULL, &data)) {
++		const char *con_path = nm_keyfile_connection_get_path (data);
++		if (con_path)
++			g_hash_table_insert (oldconns, g_strdup (con_path), data);
++	}
+ 
+ 	while ((item = g_dir_read_name (dir))) {
+ 		NMKeyfileConnection *connection;
+-- 
+1.7.11.7
+

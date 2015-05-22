@@ -1,0 +1,36 @@
+From c3f062a63a732d55abf7e090b13743677e81f214 Mon Sep 17 00:00:00 2001
+From: Thomas Haller <thaller@redhat.com>
+Date: Wed, 2 Jul 2014 10:58:49 +0200
+Subject: [PATCH 1/1] supplicant: fix crash passing invalid parameter to
+ AddBlob when adding network
+
+The DBUS method 'AddBlob' expects a data argument of type 'ay'.
+Instead we passed the hash table 'blobs'.
+
+This must be broken for a long time and surprisingly stayed unnoticed.
+
+https://mail.gnome.org/archives/networkmanager-list/2014-July/msg00001.html
+
+Fixes: fb6cde508c1417765684ae940f72d639067ddf0a
+Signed-off-by: Thomas Haller <thaller@redhat.com>
+(cherry picked from commit e343c45ebbb7976e15241a241f2876de8619ca3c)
+---
+ src/supplicant-manager/nm-supplicant-interface.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/src/supplicant-manager/nm-supplicant-interface.c b/src/supplicant-manager/nm-supplicant-interface.c
+index 4063085..e81dd61 100644
+--- a/src/supplicant-manager/nm-supplicant-interface.c
++++ b/src/supplicant-manager/nm-supplicant-interface.c
+@@ -1080,7 +1080,7 @@ add_network_cb (DBusGProxy *proxy, DBusGProxyCall *call_id, gpointer user_data)
+ 			                            self,
+ 			                            NULL,
+ 			                            DBUS_TYPE_STRING, name,
+-			                            DBUS_TYPE_G_UCHAR_ARRAY, blobs,
++			                            DBUS_TYPE_G_UCHAR_ARRAY, data,
+ 			                            G_TYPE_INVALID);
+ 		nm_call_store_add (priv->assoc_pcalls, priv->iface_proxy, call);
+ 	}
+-- 
+1.9.3
+

@@ -1,0 +1,33 @@
+From 6b6265ebebd7342a0d414bd1370e7af0e472d522 Mon Sep 17 00:00:00 2001
+From: Dan Williams <dcbw@redhat.com>
+Date: Fri, 8 Nov 2013 15:34:55 -0600
+Subject: [PATCH] team: fix possible crash by ensuring teamd context is
+ cleared
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+teamd_cleanup() might get called multiple times, and since the rest
+of the function is safe against multi-calls, make priv->tdc safe
+against being called again too.
+
+Signed-off-by: Jiří Klimeš <jklimes@redhat.com>
+---
+ src/devices/nm-device-team.c | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/src/devices/nm-device-team.c b/src/devices/nm-device-team.c
+index 734cf4d..1fe7caf 100644
+--- a/src/devices/nm-device-team.c
++++ b/src/devices/nm-device-team.c
+@@ -270,6 +270,7 @@ teamd_cleanup (NMDevice *dev, gboolean device_state_failed)
+ 	if (priv->tdc) {
+ 		teamdctl_disconnect (priv->tdc);
+ 		teamdctl_free (priv->tdc);
++		priv->tdc = NULL;
+ 	}
+ #endif
+ 
+-- 
+1.7.11.7
+

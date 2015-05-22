@@ -1,0 +1,60 @@
+From 739faab9f5d8c2b5542da733df6fece45f8873d6 Mon Sep 17 00:00:00 2001
+From: Thomas Haller <thaller@redhat.com>
+Date: Thu, 16 Jan 2014 20:20:35 +0100
+Subject: [PATCH 1/1] core/platform: fix wrong calculation of address
+ lifetime/preferred for kernel addresses
+
+When receiving an IPv4/IPv6 address from the kernel, platform set the
+timestamp to an invalid value before. The address timestamp must be set
+to *now*, because the lifetime and preferred arguments are counting from
+now.
+
+(cherry picked from commit 177c767320578c490ff94e723115d830d1753ae1)
+
+Signed-off-by: Thomas Haller <thaller@redhat.com>
+---
+ src/platform/nm-linux-platform.c | 14 ++++++++++++--
+ 1 file changed, 12 insertions(+), 2 deletions(-)
+
+diff --git a/src/platform/nm-linux-platform.c b/src/platform/nm-linux-platform.c
+index 55646d4..b5e3618 100644
+--- a/src/platform/nm-linux-platform.c
++++ b/src/platform/nm-linux-platform.c
+@@ -834,6 +834,16 @@ hack_empty_master_iff_lower_up (NMPlatform *platform, struct nl_object *object)
+ 	rtnl_link_unset_flags (rtnllink, IFF_LOWER_UP);
+ }
+ 
++static guint32
++get_time (void)
++{
++	struct timespec tp;
++
++	clock_gettime (CLOCK_MONOTONIC, &tp);
++
++	return tp.tv_sec;
++}
++
+ static void
+ init_ip4_address (NMPlatformIP4Address *address, struct rtnl_addr *rtnladdr)
+ {
+@@ -846,7 +856,7 @@ init_ip4_address (NMPlatformIP4Address *address, struct rtnl_addr *rtnladdr)
+ 
+ 	address->ifindex = rtnl_addr_get_ifindex (rtnladdr);
+ 	address->plen = rtnl_addr_get_prefixlen (rtnladdr);
+-	address->timestamp = rtnl_addr_get_create_time (rtnladdr);
++	address->timestamp = get_time ();
+ 	address->lifetime = rtnl_addr_get_valid_lifetime (rtnladdr);
+ 	address->preferred = rtnl_addr_get_preferred_lifetime (rtnladdr);
+ 	g_assert (nl_addr_get_len (nladdr) == sizeof (address->address));
+@@ -867,7 +877,7 @@ init_ip6_address (NMPlatformIP6Address *address, struct rtnl_addr *rtnladdr)
+ 
+ 	address->ifindex = rtnl_addr_get_ifindex (rtnladdr);
+ 	address->plen = rtnl_addr_get_prefixlen (rtnladdr);
+-	address->timestamp = rtnl_addr_get_create_time (rtnladdr);
++	address->timestamp = get_time ();
+ 	address->lifetime = rtnl_addr_get_valid_lifetime (rtnladdr);
+ 	address->preferred = rtnl_addr_get_preferred_lifetime (rtnladdr);
+ 	address->flags = rtnl_addr_get_flags (rtnladdr);
+-- 
+1.8.5.3
+

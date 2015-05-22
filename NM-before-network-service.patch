@@ -1,0 +1,67 @@
+From 7481c64ad5068130d92066b1155e6933f8c39655 Mon Sep 17 00:00:00 2001
+From: Dan Winship <danw@gnome.org>
+Date: Mon, 16 Dec 2013 14:42:40 -0500
+Subject: [PATCH] systemd: add "Before=network.service" on Fedora/RHEL (rh
+ #1034983)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+On Fedora/RHEL, NetworkManager.service needs to be started before
+network.service, or else network.service may try to bring up NM's
+devices itself.
+
+Signed-off-by: Jiří Klimeš <jklimes@redhat.com>
+---
+ configure.ac                   | 6 ++++++
+ data/Makefile.am               | 3 ++-
+ data/NetworkManager.service.in | 2 +-
+ 3 files changed, 9 insertions(+), 2 deletions(-)
+
+diff --git a/configure.ac b/configure.ac
+index f19b9ad..b525de6 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -110,6 +110,12 @@ AM_CONDITIONAL(CONFIG_PLUGIN_IFCFG_RH, test "$enable_ifcfg_rh" = "yes")
+ AM_CONDITIONAL(CONFIG_PLUGIN_IFCFG_SUSE, test "$enable_ifcfg_suse" = "yes")
+ AM_CONDITIONAL(CONFIG_PLUGIN_IFUPDOWN, test "$enable_ifupdown" = "yes")
+ AM_CONDITIONAL(CONFIG_PLUGIN_IFNET, test "$enable_ifnet" = "yes")
++
++if test "$enable_ifcfg_rh" = "yes"; then
++    DISTRO_NETWORK_SERVICE=network.service
++fi
++AC_SUBST(DISTRO_NETWORK_SERVICE)
++
+ # Code coverage
+ GNOME_CODE_COVERAGE
+ 
+diff --git a/data/Makefile.am b/data/Makefile.am
+index df93f27..29011ef 100644
+--- a/data/Makefile.am
++++ b/data/Makefile.am
+@@ -38,7 +38,8 @@ edit = sed \
+ 	-e 's|@sbindir[@]|$(sbindir)|g' \
+ 	-e 's|@sysconfdir[@]|$(sysconfdir)|g' \
+ 	-e 's|@localstatedir[@]|$(localstatedir)|g' \
+-	-e 's|@libexecdir[@]|$(libexecdir)|g'
++	-e 's|@libexecdir[@]|$(libexecdir)|g' \
++	-e 's|@DISTRO_NETWORK_SERVICE[@]|$(DISTRO_NETWORK_SERVICE)|g'
+ 
+ EXTRA_DIST = \
+ 	NetworkManager.service.in \
+diff --git a/data/NetworkManager.service.in b/data/NetworkManager.service.in
+index 8ceefad..84a9c95 100644
+--- a/data/NetworkManager.service.in
++++ b/data/NetworkManager.service.in
+@@ -1,7 +1,7 @@
+ [Unit]
+ Description=Network Manager
+ Wants=network.target
+-Before=network.target
++Before=network.target @DISTRO_NETWORK_SERVICE@
+ 
+ [Service]
+ Type=dbus
+-- 
+1.7.11.7
+

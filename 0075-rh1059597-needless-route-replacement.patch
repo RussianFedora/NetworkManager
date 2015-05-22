@@ -1,0 +1,127 @@
+From 01b1d3de8018087114455c60b9bac53dbbffc329 Mon Sep 17 00:00:00 2001
+From: Dan Williams <dcbw@redhat.com>
+Date: Mon, 6 Jan 2014 15:24:07 -0600
+Subject: [PATCH] platform: don't replace routes that already exist
+
+If a route already exists that matches the network, prefix, gateway,
+and metric of a route NM would like to add, don't try to overwrite
+the route.
+
+Unlike IP addresses, the kernel doesn't update the details, it
+appears to completely replace that route, which might screw up
+external tools that added the route originally.
+
+One example of this is IPSec via openswan/libreswan.  They add the
+routes to the kernel upon connection, and if NM replaces those routes,
+IPSec no longer works.  While this may be due to kernel bugs or
+bad handling of route replacement, there's no reason for NM to touch
+routes that it wouldn't materially change anyway.
+
+(yes, we could perhaps use NLM_F_REPLACE in add_kernel_object() only
+when we really wanted to replace something, but why ask the kernel
+to do the work when it's not required anyway?)
+
+(cherry picked from commit 8d9bfcdd5a1d8d716e8503f88e7b2e239408f667)
+---
+ src/platform/nm-platform.c | 48 ++++++++++++++++++++++++++++++----------------
+ 1 file changed, 32 insertions(+), 16 deletions(-)
+
+diff --git a/src/platform/nm-platform.c b/src/platform/nm-platform.c
+index f5a4c9b..d40e652 100644
+--- a/src/platform/nm-platform.c
++++ b/src/platform/nm-platform.c
+@@ -1484,6 +1484,7 @@ nm_platform_ip4_route_sync (int ifindex, const GArray *known_routes)
+ 	GArray *routes;
+ 	NMPlatformIP4Route *route;
+ 	const NMPlatformIP4Route *known_route;
++	gboolean success;
+ 	int i;
+ 
+ 	/* Delete unknown routes */
+@@ -1495,22 +1496,29 @@ nm_platform_ip4_route_sync (int ifindex, const GArray *known_routes)
+ 		if (!array_contains_ip4_route (known_routes, route))
+ 			nm_platform_ip4_route_delete (ifindex, route->network, route->plen, route->metric);
+ 	}
+-	g_array_free (routes, TRUE);
+ 
+-	if (!known_routes)
++	if (!known_routes) {
++		g_array_free (routes, TRUE);
+ 		return TRUE;
++	}
+ 
+ 	/* Add missing routes */
+-	for (i = 0; i < known_routes->len; i++) {
++	for (i = 0, success = TRUE; i < known_routes->len && success; i++) {
+ 		known_route = &g_array_index (known_routes, NMPlatformIP4Route, i);
+ 
+-		if (!nm_platform_ip4_route_add (ifindex,
+-				known_route->network, known_route->plen, known_route->gateway,
+-				known_route->metric, known_route->mss))
+-			return FALSE;
++		/* Ignore routes that already exist */
++		if (!array_contains_ip4_route (routes, known_route)) {
++			success = nm_platform_ip4_route_add (ifindex,
++			                                     known_route->network,
++			                                     known_route->plen,
++			                                     known_route->gateway,
++			                                     known_route->metric,
++			                                     known_route->mss);
++		}
+ 	}
+ 
+-	return TRUE;
++	g_array_free (routes, TRUE);
++	return success;
+ }
+ 
+ /**
+@@ -1530,6 +1538,7 @@ nm_platform_ip6_route_sync (int ifindex, const GArray *known_routes)
+ 	GArray *routes;
+ 	NMPlatformIP6Route *route;
+ 	const NMPlatformIP6Route *known_route;
++	gboolean success;
+ 	int i;
+ 
+ 	/* Delete unknown routes */
+@@ -1541,22 +1550,29 @@ nm_platform_ip6_route_sync (int ifindex, const GArray *known_routes)
+ 		if (!array_contains_ip6_route (known_routes, route))
+ 			nm_platform_ip6_route_delete (ifindex, route->network, route->plen, route->metric);
+ 	}
+-	g_array_free (routes, TRUE);
+ 
+-	if (!known_routes)
++	if (!known_routes) {
++		g_array_free (routes, TRUE);
+ 		return TRUE;
++	}
+ 
+ 	/* Add missing routes */
+-	for (i = 0; i < known_routes->len; i++) {
++	for (i = 0, success = TRUE; i < known_routes->len && success; i++) {
+ 		known_route = &g_array_index (known_routes, NMPlatformIP6Route, i);
+ 
+-		if (!nm_platform_ip6_route_add (ifindex,
+-				known_route->network, known_route->plen, known_route->gateway,
+-				known_route->metric, known_route->mss))
+-			return FALSE;
++		/* Ignore routes that already exist */
++		if (!array_contains_ip6_route (routes, known_route)) {
++			success = nm_platform_ip6_route_add (ifindex,
++			                                     known_route->network,
++			                                     known_route->plen,
++			                                     known_route->gateway,
++			                                     known_route->metric,
++			                                     known_route->mss);
++		}
+ 	}
+ 
+-	return TRUE;
++	g_array_free (routes, TRUE);
++	return success;
+ }
+ 
+ gboolean
+-- 
+1.9.3
+

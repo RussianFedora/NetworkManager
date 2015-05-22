@@ -1,0 +1,29 @@
+From 12b46b77359115a32ac406794586b886d8cb2587 Mon Sep 17 00:00:00 2001
+From: Dan Williams <dcbw@redhat.com>
+Date: Tue, 18 Mar 2014 15:37:12 -0500
+Subject: [PATCH 1/1] core: emit PropertyChanged signal for ActiveConnection
+ when disconnecting
+
+(cherry picked from commit 73d128bbd17120225bb4986e3f05566f10fab581)
+
+Conflicts:
+	src/devices/nm-device.c
+---
+ src/devices/nm-device.c | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/src/devices/nm-device.c b/src/devices/nm-device.c
+index 9cb79f2..e50e1c2 100644
+--- a/src/devices/nm-device.c
++++ b/src/devices/nm-device.c
+@@ -4364,6 +4364,7 @@ clear_act_request (NMDevice *self)
+ 
+ 	g_object_unref (priv->act_request);
+ 	priv->act_request = NULL;
++	g_object_notify (G_OBJECT (self), NM_DEVICE_ACTIVE_CONNECTION);
+ }
+ 
+ static void
+-- 
+1.9.0
+
