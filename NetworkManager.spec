@@ -134,6 +134,9 @@ Patch75: 0075-rh1059597-needless-route-replacement.patch
 Patch76: 0076-rh1059597-route-sources.patch
 Patch77: 0077-rh1001529-dhcp-send-hostname.patch
 
+# Fix https://bugzilla.redhat.com/show_bug.cgi?id=1161232
+Patch78: 0003-kill-dns-plugin-child-synchronously-rh1161232.patch
+
 BuildRoot: %{_tmppath}/%{name}-%{version}-%{release}-root-%(%{__id_u} -n)
 
 %if 0%{?fedora} && 0%{?fedora} < 20
@@ -384,6 +387,7 @@ by nm-connection-editor and nm-applet in a non-graphical environment.
 %patch75 -p1 -b .0075-rh1059597-needless-route-replacement.orig
 %patch76 -p1 -b .0076-rh1059597-route-sources.orig
 %patch77 -p1 -b .0077-rh1001529-dhcp-send-hostname.orig
+%patch78 -p1 -b .0003-kill-dns-plugin-child-synchronously-rh1161232
 
 %build
 
@@ -617,6 +621,9 @@ fi
 %endif
 
 %changelog
+* Fri May 22 2015 Arkady L. Shane <ashejn@russianfedora.ru> - 0.9.9.0-46.git20131003
+- Fix https://bugzilla.redhat.com/show_bug.cgi?id=1161232
+
 * Fri Oct 17 2014 Dan Williams <dcbw@redhat.com> - 0.9.9.0-45.git20131003
 - ifcfg-rh: backport DHCP_SEND_HOSTNAME=no/yes option (rh #1001529)
 
